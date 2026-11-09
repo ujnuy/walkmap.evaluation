@@ -6,10 +6,10 @@
 export const FIREBASE_CONFIG = null;
 /*
 export const FIREBASE_CONFIG = {
-  apiKey: "...",
-  authDomain: "your-project.firebaseapp.com",
-  projectId: "your-project",
-  storageBucket: "your-project.appspot.com",
+  apiKey: "AIza...",
+  authDomain: "walkmap-xxxx.firebaseapp.com",
+  projectId: "walkmap-xxxx",
+  storageBucket: "walkmap-xxxx.firebasestorage.app",
   messagingSenderId: "...",
   appId: "..."
 };
