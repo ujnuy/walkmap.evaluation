@@ -1,299 +1,499 @@
-(function () {
-  const CFG = window.CONFIG;
-  const DEMO = new URLSearchParams(location.search).has("demo");
-  const TRACK_KEY = "walkmap.track";
+import { TRAIL_COLOR, MAX_ACCURACY_M, MIN_STEP_M } from "./config.js";
+import { createBackend } from "./backend.js";
+import { walkerHtml, previewSvg } from "./sprite.js";
 
-  const $ = function (id) { return document.getElementById(id); };
+const $ = (id) => document.getElementById(id);
+const DEMO = new URLSearchParams(location.search).has("demo");
+const GENDER_KEY = "walkmap.gender";
+const GUEST_TRAIL_KEY = "walkmap.trail.guest";
+const GUEST_MINE_KEY = "walkmap.guest.mine";
 
-  // ---------- 지도 ----------
-  const map = L.map("map", { zoomControl: false, attributionControl: true })
-    .setView(DEMO ? CFG.demoCenter : CFG.startCenter, CFG.startZoom);
+// ===================== 상태 =====================
+// 게스트의 "내가 쓴 글" 목록과 경로는 sessionStorage 에만 둡니다.
+// → 탭/사이트를 닫으면 사라져서, 다시 와도 내가 쓴 글인지 알 수 없어요.
+// 로그인 사용자는 authorId 로 글이 연결되고, 경로는 Firestore(users/{uid})에 백업됩니다.
+const state = {
+  started: false,
+  user: null,            // { uid, name } | null(게스트)
+  gender: readLocal(GENDER_KEY) || "m",
+  guestMine: new Set(readJSON(sessionStorage, GUEST_MINE_KEY, [])),
+  reviews: [],
+  rating: null,
+  photo: null,           // 압축된 dataURL
+  roadName: "",
+  current: null,
+  facingLeft: false,
+  lastMoveAt: 0,
+  follow: true,
+};
 
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-  }).addTo(map);
+const backend = await createBackend();
 
-  const ratingLayer = L.layerGroup().addTo(map);
+// ===================== 지도 =====================
+// 시작 위치는 GPS로 찾은 현재 위치. 찾기 전까지는 한반도 전체를 보여줌.
+const map = L.map("map", { zoomControl: false }).setView([36.4, 127.8], 7);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: "&copy; OpenStreetMap contributors",
+}).addTo(map);
 
-  // ---------- 지나온 길 ----------
-  let track = loadTrack();
-  const trackLine = L.polyline(track, { color: "#ff8c1a", weight: 6, opacity: .9 }).addTo(map);
+let trail = [];
+const trailLine = L.polyline([], { color: TRAIL_COLOR, weight: 7, opacity: 0.85, lineCap: "round" }).addTo(map);
+const reviewLayer = L.layerGroup().addTo(map);
+let walker = null;
+let accuracyCircle = null;
 
-  function loadTrack() {
-    try { return JSON.parse(localStorage.getItem(TRACK_KEY)) || []; } catch (e) { return []; }
+const makeWalkerIcon = () =>
+  L.divIcon({ className: "walker", html: walkerHtml(state.gender), iconSize: [36, 48], iconAnchor: [18, 46] });
+
+// ===================== 시작 화면 =====================
+renderGenderButtons();
+document.querySelectorAll(".gender").forEach((btn) =>
+  btn.addEventListener("click", () => setGender(btn.dataset.gender)));
+
+if (!backend.canLogin) {
+  $("btnLogin").disabled = true;
+  $("loginNote").textContent = "※ 로그인은 config.js 에 Firebase 설정을 넣어야 사용할 수 있어요 (README 참고).";
+}
+
+$("btnLogin").addEventListener("click", async () => {
+  try { await backend.signIn(); } // 성공하면 onAuth 에서 시작
+  catch (e) { toast("로그인 실패: " + (e.message || e)); }
+});
+$("btnGuest").addEventListener("click", () => start(null));
+
+// 이미 로그인된 사용자는 시작 화면을 건너뜀
+backend.onAuth((user) => { if (user && !state.started) start(user); });
+
+async function start(user) {
+  if (state.started) return;
+  state.started = true;
+  state.user = user;
+  $("start").classList.add("hidden");
+  $("who").textContent = user ? `· ${user.name}` : "· 게스트";
+
+  if (user) {
+    const profile = await backend.loadProfile(user.uid).catch(() => null);
+    if (profile?.gender) setGender(profile.gender, { skipSave: true });
+    const local = readJSON(localStorage, userTrailKey(), []);
+    const remote = unflatten(profile?.trail || []);
+    trail = remote.length >= local.length ? remote : local;
+  } else {
+    trail = readJSON(sessionStorage, GUEST_TRAIL_KEY, []);
   }
-  function saveTrack() {
-    try { localStorage.setItem(TRACK_KEY, JSON.stringify(track.slice(-5000))); } catch (e) {}
+  trailLine.setLatLngs(trail);
+
+  renderReviews();
+  startTracking();
+}
+
+// ===================== 캐릭터(여/남) =====================
+function setGender(g, { skipSave = false } = {}) {
+  state.gender = g;
+  writeLocal(GENDER_KEY, g);
+  renderGenderButtons();
+  if (walker) {
+    walker.setIcon(makeWalkerIcon());
+    walker.getElement()?.classList.toggle("left", state.facingLeft);
+  }
+  if (state.user && !skipSave) backend.saveProfile(state.user.uid, { gender: g }).catch(() => {});
+}
+
+function renderGenderButtons() {
+  document.querySelectorAll(".pv").forEach((el) => { if (!el.innerHTML) el.innerHTML = previewSvg(el.dataset.pv, 4); });
+  document.querySelectorAll(".gender").forEach((b) => b.classList.toggle("selected", b.dataset.gender === state.gender));
+}
+
+// ===================== 위치 추적 =====================
+function startTracking() {
+  $("status").textContent = "위치 찾는 중…";
+  if (DEMO) return startDemo();
+  if (!("geolocation" in navigator)) {
+    $("status").textContent = "이 브라우저는 위치 기능을 지원하지 않아요.";
+    return;
+  }
+  showLocating("📍 현재 위치를 찾는 중…");
+  // 1) 빠른 대략 위치로 먼저 지도 이동 (Wi-Fi/기지국, 캐시 허용)
+  navigator.geolocation.getCurrentPosition(
+    (p) => {
+      if (walker) return; // 정밀 위치가 먼저 왔으면 무시
+      map.setView([p.coords.latitude, p.coords.longitude], 17);
+      hideLocating();
+    },
+    () => {},
+    { enableHighAccuracy: false, maximumAge: 300000, timeout: 8000 }
+  );
+  // 2) 정밀 GPS로 계속 추적
+  navigator.geolocation.watchPosition(
+    (p) => onPosition(p.coords.latitude, p.coords.longitude, p.coords.accuracy),
+    onGeoError,
+    { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }
+  );
+}
+
+function onPosition(lat, lng, accuracy) {
+  const pos = L.latLng(lat, lng);
+  $("status").textContent = `정확도 ±${Math.round(accuracy)}m`;
+
+  if (!walker) {
+    walker = L.marker(pos, { icon: makeWalkerIcon(), zIndexOffset: 1000 }).addTo(map);
+    accuracyCircle = L.circle(pos, { radius: accuracy, color: "#3b82f6", weight: 1, fillOpacity: 0.08 }).addTo(map);
+    map.setView(pos, 18);
+    hideLocating();
   }
 
-  // ---------- 캐릭터 ----------
-  const heroIcon = L.divIcon({
-    className: "hero-icon",
-    html: '<div class="hero" id="hero"><img alt="" src="' + SPRITE.images.idle + '"></div>',
-    iconSize: [36, 48],
-    iconAnchor: [18, 46]
+  // 이동 방향에 따라 좌우 반전
+  if (state.current && Math.abs(lng - state.current.lng) > 1e-7) {
+    state.facingLeft = lng < state.current.lng;
+    walker.getElement()?.classList.toggle("left", state.facingLeft);
+  }
+  walker.setLatLng(pos);
+  accuracyCircle.setLatLng(pos).setRadius(accuracy);
+
+  // 지나온 길 (정확도 좋고, 일정 거리 이상 움직였을 때만)
+  const last = trail[trail.length - 1];
+  const moved = last ? map.distance(last, pos) : Infinity;
+  if (accuracy <= MAX_ACCURACY_M && moved >= MIN_STEP_M) {
+    trail.push([lat, lng]);
+    trailLine.addLatLng(pos);
+    saveTrail();
+    if (last) state.lastMoveAt = Date.now();
+  }
+
+  state.current = pos;
+  if (state.follow) map.panTo(pos, { animate: true });
+  maybeUpdateRoad(pos);
+  updateSubmit();
+}
+
+// 최근 3초 안에 움직였으면 걷기 애니메이션
+setInterval(() => {
+  walker?.getElement()?.classList.toggle("walking", Date.now() - state.lastMoveAt < 3000);
+}, 500);
+
+function onGeoError(err) {
+  const msg = {
+    1: "위치 권한이 거부되었어요. 브라우저 설정에서 허용해 주세요.",
+    2: "위치를 찾을 수 없어요.",
+    3: "위치 요청 시간이 초과됐어요.",
+  }[err.code] || err.message;
+  $("status").textContent = "위치 없음";
+  if (!walker) showLocating(`⚠️ ${msg}`, true);
+  else toast(msg);
+}
+
+function showLocating(text, isError = false) {
+  $("locatingText").textContent = text;
+  $("locating").classList.toggle("error", isError);
+  $("locating").classList.remove("hidden");
+}
+function hideLocating() { $("locating").classList.add("hidden"); }
+$("btnRetryLocate").addEventListener("click", () => location.reload());
+
+// ?demo → 서울시청 근처를 가상으로 걷기 (PC 테스트용)
+function startDemo() {
+  let [lat, lng] = trail[trail.length - 1] || [37.5663, 126.9779];
+  let heading = Math.random() * Math.PI * 2;
+  setInterval(() => {
+    heading += (Math.random() - 0.5) * 0.6;
+    lat += Math.cos(heading) * 0.00004;
+    lng += Math.sin(heading) * 0.00005;
+    onPosition(lat, lng, 8);
+  }, 1000);
+}
+
+// ===================== 경로 저장 / 백업 =====================
+const userTrailKey = () => `walkmap.trail.${state.user.uid}`;
+let backupTimer = null;
+let backupDirty = false;
+
+function saveTrail() {
+  const data = trail.slice(-5000);
+  if (state.user) {
+    writeJSON(localStorage, userTrailKey(), data);
+    backupDirty = true;
+    if (!backupTimer) backupTimer = setTimeout(backupNow, 30000); // 30초마다 서버 백업
+  } else {
+    writeJSON(sessionStorage, GUEST_TRAIL_KEY, data);
+  }
+}
+
+function backupNow() {
+  clearTimeout(backupTimer);
+  backupTimer = null;
+  if (!state.user || !backupDirty) return;
+  backupDirty = false;
+  backend.saveProfile(state.user.uid, {
+    trail: trail.slice(-5000).flat(),   // Firestore는 2차원 배열 불가 → [lat,lng,lat,lng,…]
+    gender: state.gender,
+    updatedAt: Date.now(),
+  }).catch(() => { backupDirty = true; });
+}
+document.addEventListener("visibilitychange", () => { if (document.hidden) backupNow(); });
+
+function unflatten(flat) {
+  const out = [];
+  for (let i = 0; i + 1 < flat.length; i += 2) out.push([flat[i], flat[i + 1]]);
+  return out;
+}
+
+// ===================== 현재 길 이름 (Nominatim) =====================
+let lastRoadQuery = { at: 0, pos: null };
+async function maybeUpdateRoad(pos) {
+  const now = Date.now();
+  const far = !lastRoadQuery.pos || map.distance(lastRoadQuery.pos, pos) > 25;
+  if (!far || now - lastRoadQuery.at < 5000) return; // 이용 정책: 과도한 요청 금지
+  lastRoadQuery = { at: now, pos };
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=17&accept-language=ko&lat=${pos.lat}&lon=${pos.lng}`;
+    const data = await (await fetch(url)).json();
+    const a = data.address || {};
+    state.roadName = a.road || a.pedestrian || a.footway || a.path || a.neighbourhood || data.name || "이름 없는 길";
+  } catch {
+    state.roadName = state.roadName || "알 수 없는 길";
+  }
+  $("roadName").textContent = state.roadName;
+  renderRoadInfo();
+}
+
+// ===================== 평가 / 코멘트 / 사진 =====================
+document.querySelectorAll(".rate").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    state.rating = state.rating === btn.dataset.rating ? null : btn.dataset.rating;
+    document.querySelectorAll(".rate").forEach((b) => b.classList.toggle("selected", b.dataset.rating === state.rating));
+    updateSubmit();
   });
-  let heroMarker = null;
-  let walkingUntil = 0;
-  let frame = 0;
+});
 
-  setInterval(function () {
-    const el = $("hero");
-    if (!el) return;
-    const img = el.querySelector("img");
-    const walking = Date.now() < walkingUntil;
-    el.classList.toggle("walking", walking);
-    if (walking) {
-      frame = (frame + 1) % 2;
-      img.src = frame ? SPRITE.images.walk1 : SPRITE.images.walk2;
-    } else {
-      img.src = SPRITE.images.idle;
-    }
-  }, 180);
+$("comment").addEventListener("input", () => {
+  $("charCount").textContent = `${$("comment").value.length}/200`;
+  updateSubmit();
+});
 
-  // ---------- 위치 처리 ----------
-  let last = null;
-  let follow = true;
-  let current = null;
-
-  function onPosition(lat, lng, accuracy) {
-    const here = L.latLng(lat, lng);
-    current = here;
-
-    if (!heroMarker) {
-      heroMarker = L.marker(here, { icon: heroIcon, interactive: false, zIndexOffset: 1000 }).addTo(map);
-      map.setView(here, CFG.startZoom);
-    } else {
-      heroMarker.setLatLng(here);
-    }
-
-    if (last) {
-      const moved = last.distanceTo(here);
-      if (moved > 1) {
-        walkingUntil = Date.now() + 2500;
-        const el = $("hero");
-        if (el && Math.abs(here.lng - last.lng) > 1e-7) {
-          el.classList.toggle("left", here.lng < last.lng);
-        }
-      }
-    }
-
-    // 정확도가 낮은 위치는 경로에 넣지 않음
-    if (accuracy == null || accuracy <= 50) {
-      const prev = track[track.length - 1];
-      if (!prev || L.latLng(prev).distanceTo(here) > 3) {
-        track.push([lat, lng]);
-        trackLine.setLatLngs(track);
-        saveTrack();
-      }
-    }
-
-    last = here;
-    if (follow) map.panTo(here, { animate: true });
-    maybeGeocode(here);
+$("photoInput").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  if (!file.type.startsWith("image/")) return toast("이미지 파일만 올릴 수 있어요.");
+  try {
+    state.photo = await compressImage(file);
+    $("photoPreview").querySelector("img").src = state.photo;
+    $("photoPreview").classList.remove("hidden");
+  } catch {
+    toast("사진을 읽을 수 없어요.");
   }
+  updateSubmit();
+});
 
-  function startGps() {
-    if (!("geolocation" in navigator)) {
-      toast("이 브라우저는 위치 기능을 지원하지 않아요.");
-      return;
-    }
-    navigator.geolocation.watchPosition(
-      function (p) { onPosition(p.coords.latitude, p.coords.longitude, p.coords.accuracy); },
-      function (err) {
-        if (err.code === 1) toast("위치 권한을 허용해 주세요. (브라우저 설정 → 위치)");
-        else toast("위치를 찾지 못했어요. 잠시 후 다시 시도해요.");
-        $("roadName").textContent = "위치 없음";
-      },
-      { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }
-    );
-  }
+$("btnRemovePhoto").addEventListener("click", clearPhoto);
 
-  function startDemo() {
-    toast("데모 모드: 가상으로 걷는 중이에요");
-    const c = CFG.demoCenter;
-    const route = [
-      [0, 0], [0.0004, 0], [0.0008, 0.0002], [0.0008, 0.0008],
-      [0.0004, 0.0011], [0, 0.0011], [-0.0003, 0.0006], [0, 0]
-    ].map(function (d) { return [c[0] + d[0], c[1] + d[1]]; });
-    let seg = 0, t = 0;
-    setInterval(function () {
-      const a = route[seg], b = route[(seg + 1) % route.length];
-      t += 0.12;
-      if (t >= 1) { t = 0; seg = (seg + 1) % route.length; }
-      onPosition(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, 5);
-    }, 1000);
-  }
+function clearPhoto() {
+  state.photo = null;
+  $("photoPreview").classList.add("hidden");
+  $("photoPreview").querySelector("img").removeAttribute("src");
+  updateSubmit();
+}
 
-  // ---------- 길 이름 찾기 ----------
-  let currentRoad = "";
-  let lastGeoAt = 0;
-  let lastGeoPos = null;
-  let geoBusy = false;
+function updateSubmit() {
+  const hasContent = state.rating || $("comment").value.trim() || state.photo;
+  $("btnSubmit").disabled = !state.current || !hasContent;
+}
 
-  async function maybeGeocode(pos) {
-    const now = Date.now();
-    const farEnough = !lastGeoPos || lastGeoPos.distanceTo(pos) > CFG.geocodeEveryMeters;
-    const longEnough = now - lastGeoAt > CFG.geocodeEverySeconds * 1000;
-    if (geoBusy) return;
-    if (now - lastGeoAt < 3000) return; // 너무 자주 묻지 않기
-    if (currentRoad && !farEnough && !longEnough) return;
-    geoBusy = true;
-    lastGeoAt = now;
-    lastGeoPos = pos;
-    try {
-      const url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=17&accept-language=ko"
-        + "&lat=" + pos.lat + "&lon=" + pos.lng;
-      const res = await fetch(url);
-      const data = await res.json();
-      const a = data.address || {};
-      const name = a.road || a.pedestrian || a.footway || a.path || a.cycleway
-        || a.neighbourhood || a.quarter || a.suburb || "";
-      setRoad(name || "이름 없는 길");
-    } catch (e) {
-      if (!currentRoad) setRoad("길 이름을 못 찾았어요");
-    } finally {
-      geoBusy = false;
-    }
-  }
-
-  function setRoad(name) {
-    currentRoad = name;
-    $("roadName").textContent = name;
-    updateRoadStats();
-  }
-
-  function ratingsForRoad(name) {
-    return Store.all().filter(function (r) { return r.road === name; });
-  }
-
-  function updateRoadStats() {
-    if (!currentRoad) { $("roadStats").textContent = ""; return; }
-    const list = ratingsForRoad(currentRoad);
-    const good = list.filter(function (r) { return r.rating === "good"; }).length;
-    const bad = list.length - good;
-    $("roadStats").textContent = list.length
-      ? "😊 " + good + "  😣 " + bad + "  · 눌러서 코멘트 보기"
-      : "아직 평가가 없어요";
-  }
-
-  // ---------- 평가 표시 ----------
-  function esc(s) {
-    return String(s).replace(/[&<>"']/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
-    });
-  }
-
-  function fmtDate(ts) {
-    const d = new Date(ts);
-    return (d.getMonth() + 1) + "/" + d.getDate() + " " + String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
-  }
-
-  function renderRatings(items) {
-    ratingLayer.clearLayers();
-    items.forEach(function (r) {
-      const good = r.rating === "good";
-      L.circleMarker([r.lat, r.lng], {
-        radius: 8, weight: 3, color: "#1d2b53",
-        fillColor: good ? "#00b543" : "#ff004d", fillOpacity: 1
-      }).bindPopup(
-        "<b>" + (good ? "😊 편해요" : "😣 불편해요") + "</b><br>"
-        + esc(r.road || "") + (r.comment ? "<br>" + esc(r.comment) : "")
-        + "<br><small>" + fmtDate(r.ts) + "</small>"
-      ).addTo(ratingLayer);
-    });
-    updateRoadStats();
-  }
-
-  // ---------- 평가 작성 ----------
-  let pendingRating = null;
-
-  function openRate(kind) {
-    if (!current) { toast("아직 내 위치를 찾는 중이에요."); return; }
-    pendingRating = kind;
-    $("rateTitle").textContent = kind === "good" ? "😊 편해요" : "😣 불편해요";
-    $("rateRoad").textContent = currentRoad || "현재 위치";
-    $("rateComment").value = "";
-    $("rateCount").textContent = "0";
-    $("rateSheet").classList.remove("hidden");
-  }
-
-  $("goodBtn").onclick = function () { openRate("good"); };
-  $("badBtn").onclick = function () { openRate("bad"); };
-  $("rateCancel").onclick = function () { $("rateSheet").classList.add("hidden"); };
-  $("rateComment").oninput = function () { $("rateCount").textContent = this.value.length; };
-  $("rateSave").onclick = async function () {
-    const btn = this;
-    btn.disabled = true;
-    try {
-      await Store.add({
-        lat: current.lat, lng: current.lng,
-        road: currentRoad || "이름 없는 길",
-        rating: pendingRating,
-        comment: $("rateComment").value.trim()
-      });
-      $("rateSheet").classList.add("hidden");
-      toast("평가를 남겼어요!");
-    } catch (e) {
-      toast("저장하지 못했어요. 다시 시도해 주세요.");
-    } finally {
-      btn.disabled = false;
-    }
+$("btnSubmit").addEventListener("click", async () => {
+  if (!state.current) return toast("아직 위치를 찾지 못했어요.");
+  const review = {
+    lat: state.current.lat,
+    lng: state.current.lng,
+    road: state.roadName || "알 수 없는 길",
+    rating: state.rating,                       // "good" | "bad" | null
+    comment: $("comment").value.trim().slice(0, 200),
+    hasPhoto: !!state.photo,
+    authorId: state.user ? state.user.uid : null, // 게스트는 작성자 정보 없음
+    createdAt: Date.now(),
   };
+  $("btnSubmit").disabled = true;
+  $("btnSubmit").textContent = "저장 중…";
+  try {
+    const id = await backend.addReview(review, state.photo);
+    if (!state.user) {
+      state.guestMine.add(id);
+      writeJSON(sessionStorage, GUEST_MINE_KEY, [...state.guestMine]);
+      renderReviews();
+    }
+    toast(state.rating === "bad" ? "불편 신고 고마워요!" : "남겼어요!");
+    state.rating = null;
+    $("comment").value = "";
+    $("charCount").textContent = "0/200";
+    document.querySelectorAll(".rate").forEach((b) => b.classList.remove("selected"));
+    clearPhoto();
+  } catch (e) {
+    toast(e.name === "QuotaExceededError" ? "저장 공간이 부족해요." : "저장에 실패했어요: " + e.message);
+  }
+  $("btnSubmit").textContent = "남기기";
+  updateSubmit();
+});
 
-  // ---------- 길 평가 목록 ----------
-  $("roadBox").onclick = function () {
-    if (!currentRoad) return;
-    const list = ratingsForRoad(currentRoad);
-    const good = list.filter(function (r) { return r.rating === "good"; }).length;
-    $("listTitle").textContent = currentRoad;
-    $("listSummary").textContent = "😊 편해요 " + good + " · 😣 불편해요 " + (list.length - good);
-    const withText = list.filter(function (r) { return r.comment; });
-    $("commentList").innerHTML = withText.length
-      ? withText.map(function (r) {
-          return "<li>" + (r.rating === "good" ? "😊 " : "😣 ") + esc(r.comment)
-            + '<span class="when">' + fmtDate(r.ts) + "</span></li>";
-        }).join("")
-      : "<li>아직 코멘트가 없어요.</li>";
-    $("listSheet").classList.remove("hidden");
-  };
-  $("listClose").onclick = function () { $("listSheet").classList.add("hidden"); };
+// 사진 압축: 긴 변 800px, JPEG. 600KB 넘으면 화질을 낮춤.
+async function compressImage(file, maxSide = 800) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => {
+      const i = new Image();
+      i.onload = () => res(i);
+      i.onerror = rej;
+      i.src = url;
+    });
+    const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    let q = 0.75;
+    let data = canvas.toDataURL("image/jpeg", q);
+    while (data.length > 600_000 && q > 0.3) { q -= 0.1; data = canvas.toDataURL("image/jpeg", q); }
+    return data;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 
-  // 창 바깥을 누르면 닫기
-  ["rateSheet", "listSheet"].forEach(function (id) {
-    $(id).addEventListener("click", function (e) { if (e.target === this) this.classList.add("hidden"); });
+// ===================== 리뷰 표시 =====================
+function isMine(r) {
+  return state.user ? r.authorId === state.user.uid : state.guestMine.has(r.id);
+}
+
+function renderReviews() {
+  reviewLayer.clearLayers();
+  for (const r of state.reviews) {
+    const color = r.rating === "good" ? "#16a34a" : r.rating === "bad" ? "#dc2626" : "#6b7280";
+    L.circleMarker([r.lat, r.lng], {
+      radius: isMine(r) ? 9 : 7,
+      color: isMine(r) ? "#f97316" : "#111",
+      weight: isMine(r) ? 3 : 2,
+      fillColor: color,
+      fillOpacity: 1,
+    })
+      .bindPopup(() => reviewHtml(r))
+      .on("popupopen", (e) => hydratePhotos(e.popup.getElement()))
+      .addTo(reviewLayer);
+  }
+  renderRoadInfo();
+}
+
+function renderRoadInfo() {
+  const onRoad = state.reviews.filter((r) => r.road === state.roadName).sort((a, b) => b.createdAt - a.createdAt);
+  const good = onRoad.filter((r) => r.rating === "good").length;
+  const bad = onRoad.filter((r) => r.rating === "bad").length;
+  $("roadSummary").textContent = good || bad ? `😊 ${good} · 😣 ${bad}` : "아직 평가가 없어요";
+  $("recentCount").textContent = onRoad.length;
+  $("recentList").innerHTML = onRoad.slice(0, 30).map((r) => `<li>${reviewHtml(r)}</li>`).join("") ||
+    `<li class="muted">첫 코멘트를 남겨보세요!</li>`;
+  if ($("recent").open) hydratePhotos($("recentList"));
+}
+$("recent").addEventListener("toggle", () => { if ($("recent").open) hydratePhotos($("recentList")); });
+
+function reviewHtml(r) {
+  const label = r.rating === "good" ? `<b class="pop-good">😊 편해요</b>`
+    : r.rating === "bad" ? `<b class="pop-bad">😣 불편해요</b>` : "💬";
+  const mine = isMine(r) ? `<span class="mine">내 글</span>` : "";
+  const del = state.user && r.authorId === state.user.uid
+    ? `<button class="del" data-del="${escapeHtml(r.id)}">삭제</button>` : "";
+  const photo = r.hasPhoto ? `<div class="photo-slot" data-id="${escapeHtml(r.id)}"><span class="muted">📷 사진 불러오는 중…</span></div>` : "";
+  return `${label}${mine} ${escapeHtml(r.comment || "")}${photo}
+    <div class="meta">${escapeHtml(r.road || "")} · ${new Date(r.createdAt).toLocaleString("ko-KR")}${del}</div>`;
+}
+
+// 사진은 필요할 때만 불러옴 (팝업 열기 / 목록 펼치기)
+const photoCache = new Map();
+function hydratePhotos(root) {
+  root?.querySelectorAll(".photo-slot:not(.loaded)").forEach(async (slot) => {
+    slot.classList.add("loaded");
+    const id = slot.dataset.id;
+    try {
+      if (!photoCache.has(id)) photoCache.set(id, await backend.getPhoto(id));
+      const src = photoCache.get(id);
+      if (src && src.startsWith("data:image/")) {
+        const img = new Image();
+        img.alt = "첨부 사진";
+        img.src = src;
+        slot.replaceChildren(img);
+      } else {
+        slot.innerHTML = `<span class="muted">사진을 찾을 수 없어요</span>`;
+      }
+    } catch {
+      slot.innerHTML = `<span class="muted">사진을 불러오지 못했어요</span>`;
+    }
   });
+}
 
-  // ---------- 오른쪽 버튼 ----------
-  function setFollow(on) {
-    follow = on;
-    $("followBtn").classList.toggle("active", on);
-    if (on && current) map.panTo(current);
+// 내 글 삭제 (로그인 사용자만)
+document.addEventListener("click", async (e) => {
+  const id = e.target.closest?.("[data-del]")?.dataset.del;
+  if (!id || !confirm("이 글을 삭제할까요?")) return;
+  try { await backend.deleteReview(id); map.closePopup(); toast("삭제했어요."); }
+  catch (err) { toast("삭제 실패: " + err.message); }
+});
+
+// ===================== 메뉴 / 기타 UI =====================
+$("btnMenu").addEventListener("click", () => {
+  $("accountInfo").innerHTML = state.user
+    ? `🔐 <b>${escapeHtml(state.user.name)}</b> 로 로그인 중<br><span class="muted">지나온 길과 내 글이 백업되고 있어요.</span>`
+    : `👤 <b>게스트</b><br><span class="muted">사이트를 나가면 내가 쓴 글과 지나온 길 기록이 사라져요.</span>`;
+  $("btnExit").textContent = state.user ? "로그아웃" : "처음 화면으로 (게스트 기록 지우기)";
+  $("menu").classList.remove("hidden");
+});
+$("btnCloseMenu").addEventListener("click", () => $("menu").classList.add("hidden"));
+$("btnExit").addEventListener("click", async () => {
+  if (state.user) {
+    backupNow();
+    await backend.signOut();
+  } else {
+    sessionStorage.removeItem(GUEST_TRAIL_KEY);
+    sessionStorage.removeItem(GUEST_MINE_KEY);
   }
-  $("followBtn").onclick = function () { setFollow(!follow); };
-  map.on("dragstart", function () { setFollow(false); });
+  location.reload();
+});
 
-  $("clearBtn").onclick = function () {
-    if (!confirm("지나온 길을 지울까요? (평가는 지워지지 않아요)")) return;
-    track = [];
-    trackLine.setLatLngs(track);
-    saveTrack();
-    toast("지나온 길을 지웠어요.");
-  };
+$("btnFollow").addEventListener("click", () => {
+  state.follow = !state.follow;
+  $("btnFollow").classList.toggle("active", state.follow);
+  if (state.follow && state.current) map.setView(state.current, Math.max(map.getZoom(), 17));
+});
+map.on("dragstart", () => { state.follow = false; $("btnFollow").classList.remove("active"); });
 
-  // ---------- 알림 ----------
-  let toastTimer = null;
-  function toast(msg) {
-    const el = $("toast");
-    el.textContent = msg;
-    el.classList.remove("hidden");
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { el.classList.add("hidden"); }, 2800);
-  }
+$("btnClear").addEventListener("click", () => {
+  if (!confirm("지나온 길을 지울까요?")) return;
+  trail = state.current ? [[state.current.lat, state.current.lng]] : [];
+  trailLine.setLatLngs(trail);
+  saveTrail();
+});
 
-  // ---------- 시작 ----------
-  Store.onChange(renderRatings);
-  Store.init();
-  if (DEMO) startDemo(); else startGps();
-})();
+$("panelHandle").addEventListener("click", () => $("panel").classList.toggle("collapsed"));
+
+// 리뷰 구독은 모든 함수/상수가 준비된 뒤 시작
+backend.subscribeReviews((list) => {
+  state.reviews = list;
+  renderReviews();
+});
+
+// ===================== 유틸 =====================
+function readLocal(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function writeLocal(k, v) { try { localStorage.setItem(k, v); } catch {} }
+function readJSON(store, k, d) { try { return JSON.parse(store.getItem(k)) ?? d; } catch { return d; } }
+function writeJSON(store, k, v) { try { store.setItem(k, JSON.stringify(v)); } catch {} }
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+let toastTimer;
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+}
