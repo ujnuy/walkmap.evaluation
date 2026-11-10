@@ -1,12 +1,14 @@
-import { TRAIL_COLOR, MAX_ACCURACY_M, MIN_STEP_M, POOR_ACCURACY_M } from "./config.js?v=202611100631";
-import { createBackend } from "./backend.js?v=202611100631";
-import { walkerHtml, previewSvg, HAIRS, SKINS, OUTFITS, normalizeCharacter } from "./sprite.js?v=202611100631";
+import { TRAIL_COLOR, MAX_ACCURACY_M, MIN_STEP_M, POOR_ACCURACY_M } from "./config.js?v=202611102349";
+import * as T from "./trail.js?v=202611102349";
+import { createBackend } from "./backend.js?v=202611102349";
+import { walkerHtml, previewSvg, HAIRS, SKINS, OUTFITS, normalizeCharacter } from "./sprite.js?v=202611102349";
 
 const $ = (id) => document.getElementById(id);
 const DEMO = new URLSearchParams(location.search).has("demo");
 const CHAR_KEY = "walkmap.character";
 const OLD_GENDER_KEY = "walkmap.gender"; // 예전 버전(여/남) 설정
-const GUEST_TRAIL_KEY = "walkmap.trail.guest";
+const GUEST_TRAIL_KEY = "walkmap.trail.guest"; // 예전 형식(날짜 없음) — 정리용
+const GUEST_DAYS_KEY = "walkmap.days.guest";   // 게스트: 이 탭에서만 (닫으면 사라짐)
 const GUEST_MINE_KEY = "walkmap.guest.mine";
 
 // ===================== 상태 =====================
@@ -45,7 +47,10 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   attribution: "&copy; OpenStreetMap contributors",
 }).addTo(map);
 
-let trail = [];
+// 날짜별 지나온 길: days["YYYY-MM-DD"] = [[lat, lng, 시각(초)], …]. 지도에는 오늘 것만 그림.
+let days = {};
+let todayKey = T.dayKey();
+let trail = [];            // = days[todayKey]
 const trailLine = L.polyline([], { color: TRAIL_COLOR, weight: 7, opacity: 0.85, lineCap: "round" }).addTo(map);
 const reviewLayer = L.layerGroup().addTo(map);
 let walker = null;
@@ -116,13 +121,12 @@ async function beginSession(user) {
     profile = await backend.loadProfile(user.uid).catch(() => null);
     const saved = profile?.character ?? profile?.gender;
     if (saved != null) applyCharacter(normalizeCharacter(saved), { save: false });
-    const local = readJSON(localStorage, userTrailKey(), []);
-    const remote = unflatten(profile?.trail || []);
-    trail = remote.length >= local.length ? remote : local;
+    await loadUserDays(profile);
   } else {
-    trail = readJSON(sessionStorage, GUEST_TRAIL_KEY, []);
+    days = sanitizeDays(readJSON(sessionStorage, GUEST_DAYS_KEY, {}));
+    sessionStorage.removeItem(GUEST_TRAIL_KEY);
   }
-  trailLine.setLatLngs(trail);
+  rollDay(true);
   renderReviews();
 
   // 직접 고른 경우(게스트/로그인 버튼)나 저장된 캐릭터가 없으면 꾸미기 화면을 보여줌
@@ -245,11 +249,18 @@ function onPosition(lat, lng, accuracy) {
   accuracyCircle.setLatLng(pos).setRadius(accuracy);
 
   // 지나온 길 (정확도 좋고, 일정 거리 이상 움직였을 때만)
+  rollDay(); // 자정이 지났으면 새 날짜로 (지도의 선도 새로 시작)
   const last = trail[trail.length - 1];
-  const moved = last ? map.distance(last, pos) : Infinity;
+  const moved = last ? map.distance([last[0], last[1]], pos) : Infinity;
   if (accuracy <= MAX_ACCURACY_M && moved >= MIN_STEP_M) {
-    trail.push([lat, lng]);
-    trailLine.addLatLng(pos);
+    const p = [lat, lng, Math.floor(Date.now() / 1000)];
+    trail.push(p);
+    if (trail.length > T.MAX_POINTS_PER_DAY) {
+      trail.splice(0, trail.length - T.MAX_POINTS_PER_DAY);
+      trailLine.setLatLngs(T.segments(trail));
+    } else {
+      addToTrailLine(last, p);
+    }
     saveTrail();
     if (last) state.lastMoveAt = Date.now();
   }
@@ -385,36 +396,134 @@ function startDemo() {
   }, 1000);
 }
 
-// ===================== 경로 저장 / 백업 =====================
-const userTrailKey = () => `walkmap.trail.${state.user.uid}`;
+// ===================== 지나온 길 저장 / 백업 (날짜별) =====================
+// 게스트: sessionStorage (탭을 닫으면 사라짐)
+// 로그인: localStorage(최근 14일 캐시) + Firestore users/{uid}/days/{날짜} (최근 60일)
+const LOCAL_CACHE_DAYS = 14;
+const userDaysKey = () => `walkmap.days.${state.user.uid}`;
+const dirtyDays = new Set();   // 서버에 다시 올려야 하는 날짜
 let backupTimer = null;
-let backupDirty = false;
+let trailSyncBlocked = false;  // Firestore 규칙이 막고 있으면 true (이 기기에만 저장)
 
-function saveTrail() {
-  const data = trail.slice(-5000);
-  if (state.user) {
-    writeJSON(localStorage, userTrailKey(), data);
-    backupDirty = true;
-    if (!backupTimer) backupTimer = setTimeout(backupNow, 30000); // 30초마다 서버 백업
+function sanitizeDays(obj) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj || {})) {
+    if (T.isDayKey(k) && Array.isArray(v)) out[k] = v.filter((p) => Array.isArray(p) && p.length >= 2);
+  }
+  return out;
+}
+
+async function loadUserDays(profile) {
+  const uid = state.user.uid;
+  days = sanitizeDays(readJSON(localStorage, userDaysKey(), {}));
+
+  // 예전 버전(날짜 없이 저장한 경로) → "이전 기록"으로 옮김
+  const oldLocal = readJSON(localStorage, `walkmap.trail.${uid}`, []);
+  const oldRemote = unflattenPairs(profile?.trail || []);
+  const old = oldRemote.length >= oldLocal.length ? oldRemote : oldLocal;
+  if (old.length && !days[T.LEGACY_DAY]) {
+    days[T.LEGACY_DAY] = old.map((p) => [p[0], p[1], 0]);
+    dirtyDays.add(T.LEGACY_DAY);
+  }
+  try { localStorage.removeItem(`walkmap.trail.${uid}`); } catch {}
+
+  // 서버 기록과 합치기: 날짜마다 점이 더 많은 쪽을 사용
+  try {
+    const remote = await backend.listTrailDays(uid, T.MAX_DAYS);
+    const remoteKeys = new Set();
+    for (const { date, pts } of remote) {
+      if (!T.isDayKey(date)) continue;
+      remoteKeys.add(date);
+      const r = T.unflatten(pts);
+      if (!days[date] || r.length > days[date].length) days[date] = r;
+      else if (days[date].length > r.length) dirtyDays.add(date);
+    }
+    for (const k of Object.keys(days)) if (!remoteKeys.has(k) && days[k].length) dirtyDays.add(k);
+  } catch (e) {
+    reportTrailSyncError(e);
+  }
+  pruneDays();
+  persistDays();
+  scheduleBackup();
+}
+
+// 오늘 날짜가 바뀌었으면(자정) 지도의 선을 새로 시작
+function rollDay(force = false) {
+  const k = T.dayKey();
+  if (!force && k === todayKey) return;
+  todayKey = k;
+  trail = days[k] || (days[k] = []);
+  trailLine.setLatLngs(T.segments(trail));
+  pruneDays();
+}
+setInterval(() => { if (state.started) rollDay(); }, 60 * 1000);
+
+function addToTrailLine(prev, p) {
+  const rings = trailLine.getLatLngs();
+  if (!rings.length || T.isBreak(prev, p)) {
+    trailLine.setLatLngs(T.segments(trail)); // 10분 넘게 끊겼거나 순간이동 → 새 선 조각
   } else {
-    writeJSON(sessionStorage, GUEST_TRAIL_KEY, data);
+    trailLine.addLatLng([p[0], p[1]], rings[rings.length - 1]);
   }
 }
 
-function backupNow() {
+function pruneDays() {
+  const keys = T.sortDaysDesc(Object.keys(days)).filter((k) => k !== T.LEGACY_DAY);
+  for (const k of keys.slice(T.MAX_DAYS)) delete days[k];
+}
+
+function persistDays() {
+  const keep = {};
+  const recent = T.sortDaysDesc(Object.keys(days)).filter((k) => days[k].length).slice(0, LOCAL_CACHE_DAYS);
+  for (const k of recent) keep[k] = days[k];
+  if (state.user) writeJSON(localStorage, userDaysKey(), keep);
+  else writeJSON(sessionStorage, GUEST_DAYS_KEY, keep);
+}
+
+function saveTrail(dayK = todayKey) {
+  persistDays();
+  if (state.user) {
+    dirtyDays.add(dayK);
+    scheduleBackup();
+  }
+}
+
+function scheduleBackup() {
+  if (!backupTimer && dirtyDays.size && !trailSyncBlocked && state.user) {
+    backupTimer = setTimeout(backupNow, 30 * 1000); // 30초마다 서버 백업
+  }
+}
+
+async function backupNow() {
   clearTimeout(backupTimer);
   backupTimer = null;
-  if (!state.user || !backupDirty) return;
-  backupDirty = false;
-  backend.saveProfile(state.user.uid, {
-    trail: trail.slice(-5000).flat(),   // Firestore는 2차원 배열 불가 → [lat,lng,lat,lng,…]
-    character: state.character,
-    updatedAt: Date.now(),
-  }).catch(() => { backupDirty = true; });
+  if (!state.user || !dirtyDays.size || trailSyncBlocked) return;
+  const uid = state.user.uid;
+  const list = [...dirtyDays];
+  dirtyDays.clear();
+  for (const k of list) {
+    try {
+      if (days[k]?.length) await backend.saveTrailDay(uid, k, T.flatten(days[k]));
+      else await backend.deleteTrailDay(uid, k);
+    } catch (e) {
+      dirtyDays.add(k);
+      reportTrailSyncError(e);
+    }
+  }
+  scheduleBackup();
 }
 document.addEventListener("visibilitychange", () => { if (document.hidden) backupNow(); });
 
-function unflatten(flat) {
+function reportTrailSyncError(e) {
+  console.warn("지나온 길 서버 저장 실패", e);
+  if (e?.code === "permission-denied" && !trailSyncBlocked) {
+    trailSyncBlocked = true;
+    toast("지나온 길을 서버에 저장할 수 없어요 (Firebase 규칙 업데이트 필요). 이 기기에만 저장할게요.", 5000);
+  }
+}
+
+// 예전 형식 [lat,lng,lat,lng,…] → [[lat,lng],…]
+function unflattenPairs(flat) {
   const out = [];
   for (let i = 0; i + 1 < flat.length; i += 2) out.push([flat[i], flat[i + 1]]);
   return out;
@@ -842,6 +951,7 @@ async function refreshMyList() {
     $("btnGoLogin")?.addEventListener("click", () => {
       if (!confirm("처음 화면으로 돌아가요. 게스트로 걸은 경로 기록은 사라져요. 계속할까요?")) return;
       sessionStorage.removeItem(GUEST_TRAIL_KEY);
+      sessionStorage.removeItem(GUEST_DAYS_KEY);
       sessionStorage.removeItem(GUEST_MINE_KEY);
       location.reload();
     });
@@ -900,10 +1010,12 @@ $("btnCustomize").addEventListener("click", () => {
 $("btnCloseMenu").addEventListener("click", () => $("menu").classList.add("hidden"));
 $("btnExit").addEventListener("click", async () => {
   if (state.user) {
-    backupNow();
+    // 로그아웃 전에 남은 경로를 서버에 올림 (최대 5초 기다림)
+    await Promise.race([backupNow(), new Promise((r) => setTimeout(r, 5000))]);
     await backend.signOut();
   } else {
     sessionStorage.removeItem(GUEST_TRAIL_KEY);
+    sessionStorage.removeItem(GUEST_DAYS_KEY);
     sessionStorage.removeItem(GUEST_MINE_KEY);
   }
   location.reload();
@@ -918,10 +1030,115 @@ $("btnFollow").addEventListener("click", () => {
 map.on("dragstart", () => { state.follow = false; $("btnFollow").classList.remove("active"); });
 
 $("btnClear").addEventListener("click", () => {
-  if (!confirm("지나온 길을 지울까요?")) return;
-  trail = state.current ? [[state.current.lat, state.current.lng]] : [];
-  trailLine.setLatLngs(trail);
-  saveTrail();
+  if (!confirm("오늘 지나온 길을 지울까요? (지난 날짜 기록은 그대로예요)")) return;
+  clearDay(todayKey);
+});
+
+function clearDay(k) {
+  if (k === todayKey) {
+    trail.length = 0;
+    trailLine.setLatLngs([]);
+  } else {
+    delete days[k];
+  }
+  if (viewingDay === k) closeHistory();
+  saveTrail(k);
+}
+
+// ===================== 👣 내가 지나온 길 (날짜별) =====================
+const historyLayer = L.layerGroup().addTo(map);
+let viewingDay = null;
+
+$("btnTrails").addEventListener("click", () => {
+  $("menu").classList.add("hidden");
+  $("myList").classList.add("hidden");
+  $("trailDrawer").classList.remove("hidden");
+  renderTrailList();
+});
+$("btnTrailClose").addEventListener("click", () => $("trailDrawer").classList.add("hidden"));
+$("btnMyList").addEventListener("click", () => $("trailDrawer").classList.add("hidden"));
+
+function renderTrailList() {
+  const keys = T.sortDaysDesc(Object.keys(days).filter((k) => days[k]?.length));
+  const notes = [];
+  if (!state.user) {
+    notes.push(`<div class="note">👤 게스트 기록은 이 창(탭)을 닫으면 사라져요. 로그인하면 최근 60일 기록이 날짜별로 저장돼요.</div>`);
+  } else if (trailSyncBlocked) {
+    notes.push(`<div class="note warn">⚠️ 서버 저장이 막혀 있어 이 기기에만 저장 중이에요 (Firebase 규칙 업데이트 필요).</div>`);
+  }
+  notes.push(`<div class="note muted">ℹ️ 웹앱은 화면을 켜 두고 이 페이지가 열려 있을 때만 기록돼요.</div>`);
+  const items = keys.map((k) => {
+    const st = T.dayStats(days[k]);
+    const range = st.start ? `${T.formatClock(st.start)} ~ ${T.formatClock(st.end)}` : "시간 정보 없음";
+    return `<li class="day-item${k === viewingDay ? " active" : ""}">
+      <button class="day-btn" data-day="${k}">
+        <b>${T.formatDay(k)}</b>${k === todayKey ? ` <span class="today">오늘</span>` : ""}
+        <span class="muted">${T.formatKm(st.distance)} · ${range}</span>
+      </button>
+      <button class="del-day" data-day="${k}" title="이 날 기록 삭제">🗑</button>
+    </li>`;
+  }).join("");
+  $("trailBody").innerHTML = notes.join("") + (items
+    ? `<ul class="day-list">${items}</ul>`
+    : `<div class="empty"><p>아직 기록이 없어요.</p><p class="muted">걸으면 자동으로 날짜별로 기록돼요.</p></div>`);
+}
+
+$("trailBody").addEventListener("click", (e) => {
+  const del = e.target.closest(".del-day");
+  if (del) {
+    const k = del.dataset.day;
+    if (!T.isDayKey(k) || !confirm(`${T.formatDay(k)} 기록을 삭제할까요?`)) return;
+    clearDay(k);
+    renderTrailList();
+    return;
+  }
+  const btn = e.target.closest(".day-btn");
+  if (btn && T.isDayKey(btn.dataset.day)) showDay(btn.dataset.day);
+});
+
+function showDay(k) {
+  const pts = days[k];
+  if (!pts?.length) return;
+  historyLayer.clearLayers();
+  viewingDay = k;
+  if (k !== todayKey) {
+    L.polyline(T.segments(pts), { color: "#7c3aed", weight: 6, opacity: 0.9, dashArray: "10 8", lineCap: "butt" })
+      .addTo(historyLayer);
+  }
+  const first = pts[0], last = pts[pts.length - 1];
+  const tip = (label, p) => (p[2] ? `${label} ${T.formatClock(p[2])}` : label);
+  L.circleMarker([first[0], first[1]], { radius: 8, color: "#111", weight: 2, fillColor: "#22c55e", fillOpacity: 1 })
+    .bindTooltip(tip("출발", first)).addTo(historyLayer);
+  L.circleMarker([last[0], last[1]], { radius: 8, color: "#111", weight: 2, fillColor: "#ef4444", fillOpacity: 1 })
+    .bindTooltip(tip("도착", last)).addTo(historyLayer);
+
+  if (state.free) exitFreeMode();
+  state.follow = false;
+  $("btnFollow").classList.remove("active");
+  if (window.innerWidth < 700) $("trailDrawer").classList.add("hidden"); // 휴대폰: 지도가 보이게
+  const panelTop = $("panel").getBoundingClientRect().top;
+  map.fitBounds(L.latLngBounds(pts.map((p) => [p[0], p[1]])), {
+    paddingTopLeft: [24, 80],
+    paddingBottomRight: [72, Math.max(24, window.innerHeight - panelTop + 24)],
+    maxZoom: 18,
+  });
+  const st = T.dayStats(pts);
+  $("historyText").textContent = `👣 ${T.formatDay(k)}${k === todayKey ? " (오늘)" : ""} · ${T.formatKm(st.distance)}`;
+  $("historyBar").classList.remove("hidden");
+  renderTrailList();
+}
+
+function closeHistory() {
+  historyLayer.clearLayers();
+  viewingDay = null;
+  $("historyBar").classList.add("hidden");
+}
+$("btnHistoryClose").addEventListener("click", () => {
+  closeHistory();
+  state.follow = true;
+  $("btnFollow").classList.add("active");
+  if (state.current) map.setView(state.current, Math.max(map.getZoom(), 17));
+  if (!$("trailDrawer").classList.contains("hidden")) renderTrailList();
 });
 
 $("panelHandle").addEventListener("click", () => $("panel").classList.toggle("collapsed"));

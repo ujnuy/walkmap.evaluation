@@ -81,7 +81,8 @@ textarea:focus { border-color: var(--accent); }
 
 /* 토스트 */
 .toast {
-  position: fixed; left: 50%; top: 80px; transform: translateX(-50%);
+  position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + 124px); transform: translateX(-50%);
+  max-width: calc(100% - 32px); text-align: center;
   background: #111; color: #fff; padding: 10px 16px; z-index: 2000;
   font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s;
 }
@@ -325,3 +326,27 @@ button.small-btn { font-family: var(--font); cursor: pointer; }
 .locating.error .locating-actions { display: grid; grid-template-columns: 1fr; }
 .locating .locating-actions button { width: 100%; padding: 10px 6px; }
 .locating .locating-actions #btnOpenExternal { grid-column: 1 / -1; }
+
+/* ===== 👣 내가 지나온 길 ===== */
+.drawer-body .note { margin: 10px 0 0; padding: 8px 10px; font-size: 12px; line-height: 1.5; background: #f3f4f6; border: 2px solid #d1d5db; }
+.drawer-body .note.warn { background: #fef3c7; border-color: #f59e0b; color: #78350f; }
+.drawer-body .note.muted { background: none; border: none; padding: 4px 0 0; }
+.day-list { list-style: none; padding: 0; margin: 8px 0 0; }
+.day-item { display: flex; gap: 6px; align-items: stretch; margin: 8px 0; }
+.day-btn {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  padding: 10px 12px; font-family: var(--font); font-size: 15px; text-align: left; color: var(--text);
+  background: #fff; border: 2px solid #111; box-shadow: 2px 2px 0 #111; cursor: pointer;
+}
+.day-btn .muted { font-size: 12px; }
+.day-item.active .day-btn { background: #ede9fe; border-color: #7c3aed; box-shadow: 2px 2px 0 #7c3aed; }
+.day-btn .today { display: inline-block; font-size: 11px; padding: 0 5px; background: var(--accent); color: #fff; }
+.del-day { flex: none; width: 40px; font-size: 16px; background: #fff; border: 2px solid #d1d5db; cursor: pointer; }
+.history-bar {
+  position: fixed; z-index: 1002; left: 12px; right: 68px; top: calc(env(safe-area-inset-top) + 52px);
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 10px; font-size: 14px; background: #ede9fe; color: #3b0764;
+  border: 3px solid #7c3aed; box-shadow: 3px 3px 0 #111;
+}
+.history-bar.hidden { display: none; }
+.history-bar button { flex: none; font-family: var(--font); font-size: 12px; padding: 4px 8px; background: #fff; border: 2px solid #111; cursor: pointer; }

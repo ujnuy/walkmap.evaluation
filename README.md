@@ -9,7 +9,9 @@
   - 게스트: 평가·코멘트는 지도에 남지만 작성자 정보는 저장하지 않아요. 사이트(탭)를 닫으면 내가 쓴 글인지 알 수 없게 돼요
 - 🎨 캐릭터 꾸미기: 로그인/게스트를 고른 뒤 **헤어스타일 5 · 피부색 5 · 옷 5**종을 조합 (🎲 랜덤, ☰ 메뉴에서 언제든 변경, 로그인 시 계정에 저장)
 - 📍 지도는 GPS로 찾은 **현재 위치**에서 시작 + 따라가기(◎)
-- 🟧 지나온 길을 주황색 선으로 표시 (⌫로 지우기)
+- 🟧 지나온 길을 주황색 선으로 표시 — 지도에는 **오늘 걸은 길만** 보이고 자정이 지나면 새로 시작 (⌫: 오늘 기록 지우기)
+- 👣 **내가 지나온 길** (오른쪽 버튼): 날짜별 기록 목록 · 거리/시간 · 지도에서 보기 · 삭제. 로그인 시 최근 60일 서버 저장, 게스트는 탭을 닫으면 사라짐
+  - 웹앱 특성상 **이 페이지가 열려 있고 화면이 켜져 있을 때만** 기록돼요 (구글 타임라인처럼 백그라운드 기록은 불가)
 - 🛣️ 지금 서 있는 길 이름 자동 인식 (OpenStreetMap Nominatim)
 - 📢 **민원 넣기**: "불편해요"를 고르면 위치·코멘트·사진으로 안전신문고 신고 문안을 자동으로 만들어 복사하고 안전신문고로 이동
 - 📝 **내가 평가한 코멘트** (오른쪽 버튼): 로그인 사용자의 평가를 모아 보기 · 지도에서 보기 · 삭제. 게스트 평가는 지도에만 남고 이 목록에는 저장되지 않아요
@@ -82,9 +84,15 @@ service cloud.firestore {
                     && get(/databases/$(db)/documents/reviews/$(id)).data.authorId == request.auth.uid;
     }
 
-    // 로그인 사용자의 백업 (지나온 길, 캐릭터): 본인만 읽기/쓰기
+    // 로그인 사용자의 백업 (캐릭터) + 날짜별 지나온 길(days/날짜): 본인만 읽기/쓰기
     match /users/{uid} {
       allow read, write: if request.auth != null && request.auth.uid == uid;
+      match /days/{day} {
+        allow read, delete: if request.auth != null && request.auth.uid == uid;
+        allow create, update: if request.auth != null && request.auth.uid == uid
+                              && request.resource.data.pts is list
+                              && request.resource.data.pts.size() <= 60000;
+      }
     }
   }
 }

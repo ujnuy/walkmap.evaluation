@@ -11,8 +11,10 @@
 //   deleteReview(id)
 //   getPhoto(id)                  → dataURL | null
 //   listMyReviews(uid)            → 내가 쓴 글 (최신순)
+//   listTrailDays(uid)            → [{ date: "YYYY-MM-DD", pts: [lat,lng,t, …] }] (최근 날짜부터)
+//   saveTrailDay(uid, date, pts) / deleteTrailDay(uid, date)
 //   loadProfile(uid) / saveProfile(uid, data)
-import { FIREBASE_CONFIG } from "./config.js?v=202611100631";
+import { FIREBASE_CONFIG } from "./config.js?v=202611102349";
 
 export async function createBackend() {
   if (FIREBASE_CONFIG) {
@@ -53,6 +55,10 @@ function localBackend() {
       emit();
     },
     async getPhoto(id) { return read(P_KEY, {})[id] || null; },
+    // 로컬 모드: 날짜별 경로는 앱이 localStorage 에 직접 보관 → 서버 저장 없음
+    async listTrailDays() { return []; },
+    async saveTrailDay() {},
+    async deleteTrailDay() {},
     async listMyReviews(uid) {
       return read(R_KEY, []).filter((r) => r.authorId === uid).sort((a, b) => b.createdAt - a.createdAt);
     },
@@ -113,6 +119,16 @@ async function firebaseBackend(config) {
       await fs.deleteDoc(fs.doc(db, "photos", id)).catch(() => {});
       await fs.deleteDoc(fs.doc(db, "reviews", id));
     },
+    // 날짜별 지나온 길: users/{uid}/days/{YYYY-MM-DD} 문서 하나에 하루치 [lat,lng,t,…]
+    async listTrailDays(uid, max = 60) {
+      const col = fs.collection(db, "users", uid, "days");
+      const q = fs.query(col, fs.orderBy(fs.documentId(), "desc"), fs.limit(max));
+      const snap = await fs.getDocs(q);
+      return snap.docs.map((d) => ({ date: d.id, pts: d.data().pts || [] }));
+    },
+    saveTrailDay: (uid, date, pts) =>
+      fs.setDoc(fs.doc(db, "users", uid, "days", date), { pts, updatedAt: Date.now() }),
+    deleteTrailDay: (uid, date) => fs.deleteDoc(fs.doc(db, "users", uid, "days", date)),
     async listMyReviews(uid) {
       // where 하나만 쓰면 추가 색인 없이 동작 → 정렬은 받아와서 함
       const q = fs.query(reviewsCol, fs.where("authorId", "==", uid), fs.limit(500));
