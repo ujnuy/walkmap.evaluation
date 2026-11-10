@@ -1,4 +1,4 @@
-import { TRAIL_COLOR, MAX_ACCURACY_M, MIN_STEP_M } from "./config.js";
+import { TRAIL_COLOR, MAX_ACCURACY_M, MIN_STEP_M, POOR_ACCURACY_M } from "./config.js";
 import { createBackend } from "./backend.js";
 import { walkerHtml, previewSvg, HAIRS, SKINS, OUTFITS, normalizeCharacter } from "./sprite.js";
 
@@ -188,7 +188,8 @@ function startTracking() {
 
 function onPosition(lat, lng, accuracy) {
   const pos = L.latLng(lat, lng);
-  $("status").textContent = `정확도 ±${Math.round(accuracy)}m`;
+  $("status").textContent = `정확도 ±${formatDistance(accuracy)}`;
+  updateAccuracyWarning(accuracy);
 
   if (!walker) {
     walker = L.marker(pos, { icon: makeWalkerIcon(), zIndexOffset: 1000 }).addTo(map);
@@ -235,6 +236,28 @@ function onGeoError(err) {
   $("status").textContent = "위치 없음";
   if (!walker) showLocating(`⚠️ ${msg}`, true);
   else toast(msg);
+}
+
+// ----- 위치 부정확 경고 (GPS 없는 노트북·PC는 와이파이/IP로 추측해서 수백 m~수 km 틀림) -----
+let accWarnDismissed = false;
+function updateAccuracyWarning(accuracy) {
+  // 깜빡임 방지: 기준보다 나쁘면 표시, 기준의 절반보다 좋아져야 숨김
+  const el = $("accWarn");
+  const showing = !el.classList.contains("hidden");
+  const poor = showing ? accuracy > POOR_ACCURACY_M / 2 : accuracy > POOR_ACCURACY_M;
+  $("status").classList.toggle("poor", poor);
+  if (!poor) accWarnDismissed = false; // 좋아졌다가 다시 나빠지면 또 알려줌
+  $("accWarnText").textContent =
+    `⚠️ 이 기기는 위치가 부정확해요 (오차 약 ${formatDistance(accuracy)}). 정확한 기록은 휴대폰에서 이용해 주세요.`;
+  el.classList.toggle("hidden", !poor || accWarnDismissed);
+}
+$("btnAccWarnClose").addEventListener("click", () => {
+  accWarnDismissed = true;
+  $("accWarn").classList.add("hidden");
+});
+
+function formatDistance(m) {
+  return m >= 1000 ? `${(m / 1000).toFixed(1)}km` : `${Math.round(m)}m`;
 }
 
 function showLocating(text, isError = false) {

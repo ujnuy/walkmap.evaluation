@@ -21,3 +21,6 @@ export const MAX_ACCURACY_M = 40;
 
 // 이 거리(m) 이상 움직였을 때만 경로에 점 추가 (GPS 떨림 방지)
 export const MIN_STEP_M = 3;
+
+// 정확도가 이 값(m)보다 나쁘면 "위치가 부정확해요" 경고를 띄움 (노트북 등 GPS 없는 기기)
+export const POOR_ACCURACY_M = 200;
