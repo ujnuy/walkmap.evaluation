@@ -21,7 +21,12 @@ const state = {
   reviews: [],
   rating: null,
   photo: null,           // 압축된 dataURL
-  roadName: "",
+  gpsRoad: "",           // 내 위치(GPS)의 길 이름
+  free: false,           // 자유모드: 지도를 움직여 원하는 길을 평가
+  freeTarget: null,      // 자유모드에서 십자 표시가 가리키는 위치
+  freeRoad: "",
+  freeLoading: false,
+  lastAccuracy: null,
   current: null,
   facingLeft: false,
   lastMoveAt: 0,
@@ -189,6 +194,7 @@ function startTracking() {
 function onPosition(lat, lng, accuracy) {
   const pos = L.latLng(lat, lng);
   $("status").textContent = `정확도 ±${formatDistance(accuracy)}`;
+  state.lastAccuracy = accuracy;
   updateAccuracyWarning(accuracy);
 
   if (!walker) {
@@ -249,7 +255,7 @@ function updateAccuracyWarning(accuracy) {
   if (!poor) accWarnDismissed = false; // 좋아졌다가 다시 나빠지면 또 알려줌
   $("accWarnText").textContent =
     `⚠️ 이 기기는 위치가 부정확해요 (오차 약 ${formatDistance(accuracy)}). 정확한 기록은 휴대폰에서 이용해 주세요.`;
-  el.classList.toggle("hidden", !poor || accWarnDismissed);
+  el.classList.toggle("hidden", !poor || accWarnDismissed || state.free); // 자유모드에선 내 위치와 무관
 }
 $("btnAccWarnClose").addEventListener("click", () => {
   accWarnDismissed = true;
@@ -316,6 +322,32 @@ function unflatten(flat) {
 }
 
 // ===================== 현재 길 이름 (Nominatim) =====================
+// Nominatim 이용 정책: 초당 1회 이하 → 모든 요청을 1.1초 간격으로 줄 세움
+let nominatimQueue = Promise.resolve();
+let lastNominatimAt = 0;
+function fetchRoadName(pos) {
+  const job = nominatimQueue.then(async () => {
+    const wait = lastNominatimAt + 1100 - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    lastNominatimAt = Date.now();
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=17&accept-language=ko&lat=${pos.lat}&lon=${pos.lng}`;
+    const data = await (await fetch(url)).json();
+    const a = data.address || {};
+    return a.road || a.pedestrian || a.footway || a.path || a.neighbourhood || data.name || "이름 없는 길";
+  });
+  nominatimQueue = job.catch(() => {});
+  return job;
+}
+
+const activeRoad = () => (state.free ? state.freeRoad : state.gpsRoad);
+const targetPos = () => (state.free ? state.freeTarget : state.current);
+
+function showRoad() {
+  $("roadName").textContent = state.free && state.freeLoading ? "길 찾는 중…" : activeRoad() || "-";
+  renderRoadInfo();
+  updateSubmit();
+}
+
 let lastRoadQuery = { at: 0, pos: null };
 async function maybeUpdateRoad(pos) {
   const now = Date.now();
@@ -323,16 +355,90 @@ async function maybeUpdateRoad(pos) {
   if (!far || now - lastRoadQuery.at < 5000) return; // 이용 정책: 과도한 요청 금지
   lastRoadQuery = { at: now, pos };
   try {
-    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=17&accept-language=ko&lat=${pos.lat}&lon=${pos.lng}`;
-    const data = await (await fetch(url)).json();
-    const a = data.address || {};
-    state.roadName = a.road || a.pedestrian || a.footway || a.path || a.neighbourhood || data.name || "이름 없는 길";
+    state.gpsRoad = await fetchRoadName(pos);
   } catch {
-    state.roadName = state.roadName || "알 수 없는 길";
+    state.gpsRoad = state.gpsRoad || "알 수 없는 길";
   }
-  $("roadName").textContent = state.roadName;
-  renderRoadInfo();
+  if (!state.free) showRoad();
 }
+
+// ===================== 자유모드 =====================
+// 지도를 움직이면 화면의 십자 표시가 가리키는 곳의 길을 평가할 수 있어요.
+// (GPS가 없거나 부정확한 기기에서도 사용 가능)
+$("btnFreeMode").addEventListener("click", () => (state.free ? exitFreeMode() : enterFreeMode()));
+
+function enterFreeMode() {
+  state.free = true;
+  state.follow = false;
+  $("btnFollow").classList.remove("active");
+  document.body.classList.add("free-mode");
+  $("btnFreeMode").textContent = "📍 내 위치로 돌아가기";
+  $("roadLabel").textContent = "📌 선택한 길";
+  $("crosshair").classList.remove("hidden");
+  $("accWarn").classList.add("hidden");
+  placeCrosshair();
+  updateFreeTarget();
+  toast("지도를 움직여서 평가할 길을 십자 표시에 맞춰 주세요.");
+}
+
+function exitFreeMode() {
+  state.free = false;
+  document.body.classList.remove("free-mode");
+  $("btnFreeMode").textContent = "🗺️ 자유모드로 전환하기";
+  $("roadLabel").textContent = "지금 있는 길";
+  $("crosshair").classList.add("hidden");
+  state.follow = true;
+  $("btnFollow").classList.add("active");
+  if (state.current) map.setView(state.current, Math.max(map.getZoom(), 17));
+  if (state.lastAccuracy != null) updateAccuracyWarning(state.lastAccuracy);
+  showRoad();
+}
+
+// 십자 표시는 "상단바와 평가 패널 사이, 실제로 보이는 지도 영역의 가운데"에 둠
+function crosshairPoint() {
+  const mapRect = $("map").getBoundingClientRect();
+  const top = document.querySelector(".topbar").getBoundingClientRect().bottom;
+  const bottom = Math.min($("panel").getBoundingClientRect().top, window.innerHeight);
+  return L.point(mapRect.width / 2, (top + bottom) / 2 - mapRect.top);
+}
+
+function placeCrosshair() {
+  const p = crosshairPoint();
+  $("crosshair").style.left = `${p.x}px`;
+  $("crosshair").style.top = `${p.y}px`;
+}
+
+let freeTimer = null;
+let freeSeq = 0;
+function updateFreeTarget() {
+  if (!state.free) return;
+  state.freeTarget = map.containerPointToLatLng(crosshairPoint());
+  state.freeLoading = true;
+  showRoad();
+  clearTimeout(freeTimer);
+  // 지도를 멈추고 잠깐 뒤에 길 이름 조회 (움직이는 중엔 요청 안 함)
+  freeTimer = setTimeout(async () => {
+    const seq = ++freeSeq;
+    const pos = state.freeTarget;
+    let road;
+    try { road = await fetchRoadName(pos); } catch { road = "알 수 없는 길"; }
+    if (seq !== freeSeq || !state.free) return; // 그 사이 또 움직였으면 버림
+    state.freeRoad = road;
+    state.freeLoading = false;
+    showRoad();
+  }, 700);
+}
+
+// 움직이기 시작하면 바로 "길 찾는 중" (멈추기 전엔 남기기 버튼 비활성)
+map.on("movestart", () => { if (state.free) { state.freeLoading = true; showRoad(); } });
+map.on("moveend", updateFreeTarget);
+// 자유모드에서 지도를 탭하면 그 지점을 십자 표시로 가져옴
+map.on("click", (e) => {
+  if (!state.free) return;
+  map.panBy(e.containerPoint.subtract(crosshairPoint()));
+});
+window.addEventListener("resize", () => { if (state.free) { placeCrosshair(); updateFreeTarget(); } });
+$("panel").addEventListener("transitionend", () => { if (state.free) { placeCrosshair(); updateFreeTarget(); } });
 
 // ===================== 평가 / 코멘트 / 사진 =====================
 document.querySelectorAll(".rate").forEach((btn) => {
@@ -374,15 +480,17 @@ function clearPhoto() {
 
 function updateSubmit() {
   const hasContent = state.rating || $("comment").value.trim() || state.photo;
-  $("btnSubmit").disabled = !state.current || !hasContent;
+  const notReady = state.free ? !state.freeTarget || state.freeLoading : !state.current;
+  $("btnSubmit").disabled = notReady || !hasContent;
 }
 
 $("btnSubmit").addEventListener("click", async () => {
-  if (!state.current) return toast("아직 위치를 찾지 못했어요.");
+  const pos = targetPos();
+  if (!pos) return toast("아직 위치를 찾지 못했어요.");
   const review = {
-    lat: state.current.lat,
-    lng: state.current.lng,
-    road: state.roadName || "알 수 없는 길",
+    lat: pos.lat,
+    lng: pos.lng,
+    road: activeRoad() || "알 수 없는 길",
     rating: state.rating,                       // "good" | "bad" | null
     comment: $("comment").value.trim().slice(0, 200),
     hasPhoto: !!state.photo,
@@ -462,7 +570,7 @@ function renderReviews() {
 }
 
 function renderRoadInfo() {
-  const onRoad = state.reviews.filter((r) => r.road === state.roadName).sort((a, b) => b.createdAt - a.createdAt);
+  const onRoad = state.reviews.filter((r) => r.road === activeRoad()).sort((a, b) => b.createdAt - a.createdAt);
   const good = onRoad.filter((r) => r.rating === "good").length;
   const bad = onRoad.filter((r) => r.rating === "bad").length;
   $("roadSummary").textContent = good || bad ? `😊 ${good} · 😣 ${bad}` : "아직 평가가 없어요";
@@ -540,6 +648,7 @@ $("btnExit").addEventListener("click", async () => {
 });
 
 $("btnFollow").addEventListener("click", () => {
+  if (state.free) return exitFreeMode(); // 자유모드 중 ◎ = 내 위치로 돌아가기
   state.follow = !state.follow;
   $("btnFollow").classList.toggle("active", state.follow);
   if (state.follow && state.current) map.setView(state.current, Math.max(map.getZoom(), 17));

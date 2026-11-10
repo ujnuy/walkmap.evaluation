@@ -72,6 +72,12 @@
     <div id="status" class="status"></div>
   </header>
 
+  <!-- 자유모드: 평가할 위치 표시 -->
+  <div id="crosshair" class="crosshair hidden" aria-hidden="true">
+    <div class="crosshair-tag">여기를 평가</div>
+    <div class="crosshair-mark"></div>
+  </div>
+
   <!-- 위치 부정확 경고 -->
   <div id="accWarn" class="acc-warn hidden" role="status">
     <span id="accWarnText"></span>
@@ -89,7 +95,10 @@
   <section id="panel" class="panel">
     <div class="handle" id="panelHandle"></div>
     <div class="road">
-      <span class="label">지금 있는 길</span>
+      <div class="road-head">
+        <span id="roadLabel" class="label">지금 있는 길</span>
+        <button id="btnFreeMode" class="free-btn">🗺️ 자유모드로 전환하기</button>
+      </div>
       <strong id="roadName">-</strong>
       <span id="roadSummary" class="summary"></span>
     </div>
