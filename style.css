@@ -129,14 +129,6 @@ textarea:focus { border-color: var(--accent); }
 .card h1 { margin: 0; font-size: 28px; font-weight: normal; }
 .card .sub { margin: 4px 0 16px; color: var(--muted); }
 .card .label { font-size: 13px; color: var(--muted); margin-bottom: 6px; text-align: left; }
-.gender-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
-.gender {
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
-  padding: 10px 4px; font-family: var(--font); font-size: 16px;
-  background: #fff; border: 3px solid #d1d5db; cursor: pointer;
-}
-.gender.selected { border-color: var(--accent); background: #fff7ed; box-shadow: 3px 3px 0 var(--accent); }
-.gender .pv svg { display: block; }
 .big {
   display: block; width: 100%; padding: 14px; margin-top: 10px;
   font-family: var(--font); font-size: 17px; cursor: pointer;
@@ -182,3 +174,30 @@ textarea:focus { border-color: var(--accent); }
 .locating.error { animation: none; color: var(--bad); }
 .locating.error button { display: block; }
 @keyframes blink { 50% { opacity: .6; } }
+
+/* ===== 캐릭터 꾸미기 ===== */
+.start-walker { position: relative; width: 48px; height: 64px; margin: 4px auto 8px; }
+.custom-card { max-width: 400px; padding: 16px; }
+.custom-card h2 { margin: 0 0 8px; font-size: 20px; font-weight: normal; }
+.custom-stage {
+  position: relative; height: 120px; margin-bottom: 10px;
+  display: flex; align-items: center; justify-content: center;
+  background: #e5e7eb repeating-linear-gradient(90deg, transparent 0 14px, rgba(0,0,0,.04) 14px 16px);
+  border: 3px solid #111;
+}
+.big-walker { position: relative; width: fit-content; }
+.walker .shadow { left: 17%; width: 66%; }
+.dice {
+  position: absolute; right: 8px; top: 8px; width: 36px; height: 36px; font-size: 18px;
+  background: #fff; border: 2px solid #111; cursor: pointer;
+}
+.pick-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-bottom: 12px; }
+.pick {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  min-width: 0; padding: 6px 2px; font-family: var(--font); font-size: 11px; color: var(--text);
+  background: #fff; border: 2px solid #d1d5db; cursor: pointer;
+}
+.pick svg { display: block; }
+.pick.selected { border-color: var(--accent); background: #fff7ed; box-shadow: 2px 2px 0 var(--accent); }
+.pick .swatch { width: 28px; height: 28px; border: 2px solid #111; }
+.big.hidden { display: none; }

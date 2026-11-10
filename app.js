@@ -1,10 +1,11 @@
 import { TRAIL_COLOR, MAX_ACCURACY_M, MIN_STEP_M } from "./config.js";
 import { createBackend } from "./backend.js";
-import { walkerHtml, previewSvg } from "./sprite.js";
+import { walkerHtml, previewSvg, HAIRS, SKINS, OUTFITS, normalizeCharacter } from "./sprite.js";
 
 const $ = (id) => document.getElementById(id);
 const DEMO = new URLSearchParams(location.search).has("demo");
-const GENDER_KEY = "walkmap.gender";
+const CHAR_KEY = "walkmap.character";
+const OLD_GENDER_KEY = "walkmap.gender"; // 예전 버전(여/남) 설정
 const GUEST_TRAIL_KEY = "walkmap.trail.guest";
 const GUEST_MINE_KEY = "walkmap.guest.mine";
 
@@ -15,7 +16,7 @@ const GUEST_MINE_KEY = "walkmap.guest.mine";
 const state = {
   started: false,
   user: null,            // { uid, name } | null(게스트)
-  gender: readLocal(GENDER_KEY) || "m",
+  character: normalizeCharacter(readJSON(localStorage, CHAR_KEY, null) ?? readLocal(OLD_GENDER_KEY)),
   guestMine: new Set(readJSON(sessionStorage, GUEST_MINE_KEY, [])),
   reviews: [],
   rating: null,
@@ -44,37 +45,40 @@ let walker = null;
 let accuracyCircle = null;
 
 const makeWalkerIcon = () =>
-  L.divIcon({ className: "walker", html: walkerHtml(state.gender), iconSize: [36, 48], iconAnchor: [18, 46] });
+  L.divIcon({ className: "walker", html: walkerHtml(state.character), iconSize: [36, 48], iconAnchor: [18, 46] });
 
-// ===================== 시작 화면 =====================
-renderGenderButtons();
-document.querySelectorAll(".gender").forEach((btn) =>
-  btn.addEventListener("click", () => setGender(btn.dataset.gender)));
+// ===================== 시작 화면: 로그인 / 게스트 택1 =====================
+$("startWalker").innerHTML = walkerHtml(state.character, 4);
 
 if (!backend.canLogin) {
   $("btnLogin").disabled = true;
   $("loginNote").textContent = "※ 로그인은 config.js 에 Firebase 설정을 넣어야 사용할 수 있어요 (README 참고).";
 }
 
+let loginClicked = false;
 $("btnLogin").addEventListener("click", async () => {
-  try { await backend.signIn(); } // 성공하면 onAuth 에서 시작
-  catch (e) { toast("로그인 실패: " + (e.message || e)); }
+  loginClicked = true;
+  try { await backend.signIn(); } // 성공하면 onAuth 에서 이어짐
+  catch (e) { loginClicked = false; toast("로그인 실패: " + (e.message || e)); }
 });
-$("btnGuest").addEventListener("click", () => start(null));
+$("btnGuest").addEventListener("click", () => beginSession(null));
 
-// 이미 로그인된 사용자는 시작 화면을 건너뜀
-backend.onAuth((user) => { if (user && !state.started) start(user); });
+// 이미 로그인된 사용자(재방문)는 시작 화면을 건너뜀
+backend.onAuth((user) => { if (user && !state.started) beginSession(user); });
 
-async function start(user) {
+// 택1 이후: 프로필 불러오기 → 캐릭터 꾸미기 → 지도
+async function beginSession(user) {
   if (state.started) return;
   state.started = true;
   state.user = user;
   $("start").classList.add("hidden");
   $("who").textContent = user ? `· ${user.name}` : "· 게스트";
 
+  let profile = null;
   if (user) {
-    const profile = await backend.loadProfile(user.uid).catch(() => null);
-    if (profile?.gender) setGender(profile.gender, { skipSave: true });
+    profile = await backend.loadProfile(user.uid).catch(() => null);
+    const saved = profile?.character ?? profile?.gender;
+    if (saved != null) applyCharacter(normalizeCharacter(saved), { save: false });
     const local = readJSON(localStorage, userTrailKey(), []);
     const remote = unflatten(profile?.trail || []);
     trail = remote.length >= local.length ? remote : local;
@@ -82,26 +86,77 @@ async function start(user) {
     trail = readJSON(sessionStorage, GUEST_TRAIL_KEY, []);
   }
   trailLine.setLatLngs(trail);
-
   renderReviews();
-  startTracking();
+
+  // 직접 고른 경우(게스트/로그인 버튼)나 저장된 캐릭터가 없으면 꾸미기 화면을 보여줌
+  const hasSaved = user && (profile?.character != null || profile?.gender != null);
+  if (!user || loginClicked || !hasSaved) {
+    openCustomizer({ firstTime: true, onDone: startTracking });
+  } else {
+    startTracking();
+  }
 }
 
-// ===================== 캐릭터(여/남) =====================
-function setGender(g, { skipSave = false } = {}) {
-  state.gender = g;
-  writeLocal(GENDER_KEY, g);
-  renderGenderButtons();
+// ===================== 캐릭터 꾸미기 (헤어 5 × 피부 5 × 옷 5) =====================
+let draft = null;          // 꾸미는 중인 캐릭터
+let customOnDone = null;
+
+function openCustomizer({ firstTime = false, onDone = null } = {}) {
+  draft = { ...state.character };
+  customOnDone = onDone;
+  $("btnCustomDone").textContent = firstTime ? "이 캐릭터로 시작하기" : "저장";
+  $("btnCustomCancel").classList.toggle("hidden", firstTime);
+  renderCustomizer();
+  $("custom").classList.remove("hidden");
+}
+
+function renderCustomizer() {
+  $("customPreview").innerHTML = walkerHtml(draft, 6);
+  // 헤어·옷 버튼은 "지금 캐릭터에 그 항목만 바꾼 모습"으로 미리 보여줌
+  $("pickHair").innerHTML = HAIRS.map((h, i) =>
+    pickButton("hair", i, previewSvg({ ...draft, hair: i }, 3), h.name)).join("");
+  $("pickSkin").innerHTML = SKINS.map((sk, i) =>
+    pickButton("skin", i, `<span class="swatch" style="background:${sk.S}"></span>`, sk.name)).join("");
+  $("pickOutfit").innerHTML = OUTFITS.map((o, i) =>
+    pickButton("outfit", i, previewSvg({ ...draft, outfit: i }, 3), o.name)).join("");
+}
+
+function pickButton(part, i, visual, name) {
+  const sel = draft[part] === i ? " selected" : "";
+  return `<button class="pick${sel}" data-part="${part}" data-i="${i}" title="${name}" aria-label="${name}">${visual}<span>${name}</span></button>`;
+}
+
+$("custom").addEventListener("click", (e) => {
+  const btn = e.target.closest(".pick");
+  if (!btn) return;
+  draft[btn.dataset.part] = Number(btn.dataset.i);
+  renderCustomizer();
+});
+
+$("btnRandom").addEventListener("click", () => {
+  const r = (n) => Math.floor(Math.random() * n);
+  draft = { hair: r(HAIRS.length), skin: r(SKINS.length), outfit: r(OUTFITS.length) };
+  renderCustomizer();
+});
+
+$("btnCustomDone").addEventListener("click", () => {
+  applyCharacter(draft);
+  $("custom").classList.add("hidden");
+  const done = customOnDone;
+  customOnDone = null;
+  done?.();
+});
+$("btnCustomCancel").addEventListener("click", () => $("custom").classList.add("hidden"));
+
+function applyCharacter(c, { save = true } = {}) {
+  state.character = normalizeCharacter(c);
+  writeJSON(localStorage, CHAR_KEY, state.character);
+  $("startWalker").innerHTML = walkerHtml(state.character, 4);
   if (walker) {
     walker.setIcon(makeWalkerIcon());
     walker.getElement()?.classList.toggle("left", state.facingLeft);
   }
-  if (state.user && !skipSave) backend.saveProfile(state.user.uid, { gender: g }).catch(() => {});
-}
-
-function renderGenderButtons() {
-  document.querySelectorAll(".pv").forEach((el) => { if (!el.innerHTML) el.innerHTML = previewSvg(el.dataset.pv, 4); });
-  document.querySelectorAll(".gender").forEach((b) => b.classList.toggle("selected", b.dataset.gender === state.gender));
+  if (save && state.user) backend.saveProfile(state.user.uid, { character: state.character }).catch(() => {});
 }
 
 // ===================== 위치 추적 =====================
@@ -225,7 +280,7 @@ function backupNow() {
   backupDirty = false;
   backend.saveProfile(state.user.uid, {
     trail: trail.slice(-5000).flat(),   // Firestore는 2차원 배열 불가 → [lat,lng,lat,lng,…]
-    gender: state.gender,
+    character: state.character,
     updatedAt: Date.now(),
   }).catch(() => { backupDirty = true; });
 }
@@ -444,6 +499,10 @@ $("btnMenu").addEventListener("click", () => {
     : `👤 <b>게스트</b><br><span class="muted">사이트를 나가면 내가 쓴 글과 지나온 길 기록이 사라져요.</span>`;
   $("btnExit").textContent = state.user ? "로그아웃" : "처음 화면으로 (게스트 기록 지우기)";
   $("menu").classList.remove("hidden");
+});
+$("btnCustomize").addEventListener("click", () => {
+  $("menu").classList.add("hidden");
+  openCustomizer();
 });
 $("btnCloseMenu").addEventListener("click", () => $("menu").classList.add("hidden"));
 $("btnExit").addEventListener("click", async () => {

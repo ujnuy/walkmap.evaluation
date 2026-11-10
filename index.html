@@ -18,12 +18,7 @@
     <div class="card">
       <h1>🚶 길걸음</h1>
       <p class="sub">걸으면서 길을 평가해요</p>
-
-      <div class="label">캐릭터 선택</div>
-      <div class="gender-pick">
-        <button class="gender" data-gender="f"><span class="pv" data-pv="f"></span>여자</button>
-        <button class="gender" data-gender="m"><span class="pv" data-pv="m"></span>남자</button>
-      </div>
+      <div id="startWalker" class="walker walking start-walker"></div>
 
       <button id="btnLogin" class="big primary">🔐 Google로 로그인하기</button>
       <p class="hint">지나온 길과 내가 쓴 글이 계정에 백업돼요.</p>
@@ -34,15 +29,32 @@
     </div>
   </div>
 
+  <!-- ===== 캐릭터 꾸미기 ===== -->
+  <div id="custom" class="overlay hidden">
+    <div class="card custom-card">
+      <h2>🎨 캐릭터 꾸미기</h2>
+      <div class="custom-stage">
+        <div id="customPreview" class="walker walking big-walker"></div>
+        <button id="btnRandom" class="dice" title="랜덤">🎲</button>
+      </div>
+
+      <div class="label">헤어스타일</div>
+      <div id="pickHair" class="pick-row"></div>
+      <div class="label">피부색</div>
+      <div id="pickSkin" class="pick-row"></div>
+      <div class="label">옷</div>
+      <div id="pickOutfit" class="pick-row"></div>
+
+      <button id="btnCustomDone" class="big primary">이 캐릭터로 시작하기</button>
+      <button id="btnCustomCancel" class="big hidden">취소</button>
+    </div>
+  </div>
+
   <!-- ===== 메뉴 ===== -->
   <div id="menu" class="overlay hidden">
     <div class="card">
       <div id="accountInfo" class="account"></div>
-      <div class="label">캐릭터</div>
-      <div class="gender-pick">
-        <button class="gender" data-gender="f"><span class="pv" data-pv="f"></span>여자</button>
-        <button class="gender" data-gender="m"><span class="pv" data-pv="m"></span>남자</button>
-      </div>
+      <button id="btnCustomize" class="big">🎨 캐릭터 꾸미기</button>
       <button id="btnExit" class="big">로그아웃</button>
       <button id="btnCloseMenu" class="big primary">닫기</button>
     </div>
