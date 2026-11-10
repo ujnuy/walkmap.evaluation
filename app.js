@@ -1,6 +1,6 @@
-import { TRAIL_COLOR, MAX_ACCURACY_M, MIN_STEP_M, POOR_ACCURACY_M } from "./config.js?v=202611100554";
-import { createBackend } from "./backend.js?v=202611100554";
-import { walkerHtml, previewSvg, HAIRS, SKINS, OUTFITS, normalizeCharacter } from "./sprite.js?v=202611100554";
+import { TRAIL_COLOR, MAX_ACCURACY_M, MIN_STEP_M, POOR_ACCURACY_M } from "./config.js?v=202611100631";
+import { createBackend } from "./backend.js?v=202611100631";
+import { walkerHtml, previewSvg, HAIRS, SKINS, OUTFITS, normalizeCharacter } from "./sprite.js?v=202611100631";
 
 const $ = (id) => document.getElementById(id);
 const DEMO = new URLSearchParams(location.search).has("demo");
@@ -64,10 +64,40 @@ if (!backend.canLogin) {
 
 let loginClicked = false;
 $("btnLogin").addEventListener("click", async () => {
+  // Google은 앱 안 브라우저(카카오톡·인스타그램 등)에서 로그인을 막음 → 외부 브라우저로 안내
+  if (IN_APP) {
+    if (canOpenExternal()) {
+      if (confirm(`${IN_APP.name} 안에서는 Google 로그인이 되지 않아요.\n브라우저로 열어서 로그인할까요?`)) openExternal();
+    } else {
+      alert(`${IN_APP.name} 안에서는 Google 로그인이 되지 않아요.\n${openExternalGuide()}`);
+    }
+    return;
+  }
   loginClicked = true;
-  try { await backend.signIn(); } // 성공하면 onAuth 에서 이어짐
-  catch (e) { loginClicked = false; toast("로그인 실패: " + (e.message || e)); }
+  try {
+    const ok = await backend.signIn(); // 성공하면 onAuth 에서 이어짐
+    if (ok === false) loginClicked = false;
+  } catch (e) {
+    loginClicked = false;
+    toast(loginErrorMessage(e), 4000);
+  }
 });
+
+function loginErrorMessage(e) {
+  switch (e.code) {
+    case "auth/popup-blocked":
+      return "로그인 창(팝업)이 차단됐어요. 브라우저 설정에서 팝업을 허용한 뒤 다시 눌러 주세요.";
+    case "auth/operation-not-supported-in-environment":
+    case "auth/web-storage-unsupported":
+      return "이 브라우저에서는 로그인이 안 돼요. Safari·크롬에서 열어 주세요 (개인정보 보호/시크릿 모드라면 꺼 주세요).";
+    case "auth/unauthorized-domain":
+      return "로그인이 허용되지 않은 주소예요. (Firebase 승인된 도메인 설정 필요)";
+    case "auth/network-request-failed":
+      return "인터넷 연결을 확인해 주세요.";
+    default:
+      return "로그인 실패: " + (e.message || e);
+  }
+}
 $("btnGuest").addEventListener("click", () => beginSession(null));
 
 // 이미 로그인된 사용자(재방문)는 시작 화면을 건너뜀
@@ -299,7 +329,7 @@ function openExternal() {
 }
 
 if (IN_APP) {
-  $("inAppText").textContent = `📱 지금 ${IN_APP.name} 안에서 열려 있어요. 위치가 안 잡히면 크롬·사파리 같은 브라우저로 열어 주세요. ${openExternalGuide()}`;
+  $("inAppText").textContent = `📱 지금 ${IN_APP.name} 안에서 열려 있어요. 여기서는 Google 로그인이 안 되고 위치도 잘 안 잡혀요. 크롬·사파리 같은 브라우저로 열어 주세요. ${openExternalGuide()}`;
   $("inAppNote").classList.remove("hidden");
   $("btnOpenExternalStart").classList.toggle("hidden", !canOpenExternal());
   $("btnOpenExternal").classList.toggle("hidden", !canOpenExternal());
@@ -913,10 +943,10 @@ function escapeHtml(s) {
 }
 
 let toastTimer;
-function toast(msg) {
+function toast(msg, ms = 2200) {
   const t = $("toast");
   t.textContent = msg;
   t.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+  toastTimer = setTimeout(() => t.classList.remove("show"), ms);
 }

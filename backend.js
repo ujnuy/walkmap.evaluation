@@ -12,7 +12,7 @@
 //   getPhoto(id)                  → dataURL | null
 //   listMyReviews(uid)            → 내가 쓴 글 (최신순)
 //   loadProfile(uid) / saveProfile(uid, data)
-import { FIREBASE_CONFIG } from "./config.js?v=202611100554";
+import { FIREBASE_CONFIG } from "./config.js?v=202611100631";
 
 export async function createBackend() {
   if (FIREBASE_CONFIG) {
@@ -74,7 +74,6 @@ async function firebaseBackend(config) {
   const db = fs.getFirestore(app);
   const auth = au.getAuth(app);
   const reviewsCol = fs.collection(db, "reviews");
-  await au.getRedirectResult(auth).catch(() => {}); // 모바일 리다이렉트 로그인 복귀 처리
 
   return {
     mode: "firebase",
@@ -83,17 +82,19 @@ async function firebaseBackend(config) {
       return au.onAuthStateChanged(auth, (u) =>
         cb(u ? { uid: u.uid, name: u.displayName || u.email || "사용자" } : null));
     },
+    // 팝업 로그인만 사용.
+    // 리다이렉트 로그인(signInWithRedirect)은 사이트(github.io)와 로그인 도메인(firebaseapp.com)이
+    // 다르면 Safari 등에서 "missing initial state" 오류가 나서 쓰지 않음 (Firebase 공식 권장).
+    // 반환값: true = 로그인됨, false = 사용자가 창을 닫음
     async signIn() {
       const provider = new au.GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: "select_account" });
       try {
         await au.signInWithPopup(auth, provider);
+        return true;
       } catch (e) {
-        // 팝업이 막히는 환경(일부 모바일 브라우저)은 리다이렉트로 재시도
-        if (["auth/popup-blocked", "auth/operation-not-supported-in-environment"].includes(e.code)) {
-          await au.signInWithRedirect(auth, provider);
-        } else if (e.code !== "auth/popup-closed-by-user") {
-          throw e;
-        }
+        if (["auth/popup-closed-by-user", "auth/cancelled-popup-request"].includes(e.code)) return false;
+        throw e;
       }
     },
     signOut: () => au.signOut(auth),
