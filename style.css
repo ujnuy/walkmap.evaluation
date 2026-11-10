@@ -279,3 +279,24 @@ body.free-mode .road .label { color: var(--accent); }
   margin-top: 8px; padding: 4px 10px; font-family: var(--font); font-size: 12px; cursor: pointer;
   background: #fff; border: 2px solid #111; box-shadow: 2px 2px 0 #111;
 }
+
+/* ===== 안전신문고 민원 ===== */
+.complaint-btn {
+  display: block; width: 100%; margin: -2px 0 10px; padding: 10px;
+  font-family: var(--font); font-size: 16px; cursor: pointer;
+  background: #fef2f2; color: var(--bad); border: 3px solid var(--bad); box-shadow: 3px 3px 0 var(--bad);
+}
+.complaint-btn.hidden { display: none; }
+.complaint-btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--bad); }
+.complaint-card { max-width: 420px; text-align: left; }
+.complaint-card h2 { margin: 0 0 4px; font-size: 20px; font-weight: normal; text-align: center; }
+.complaint-card textarea { font-size: 14px; line-height: 1.5; }
+.complaint-photo { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+.complaint-photo.hidden { display: none; }
+.complaint-photo img { width: 72px; height: 72px; object-fit: cover; border: 2px solid #111; flex: none; }
+.small-btn {
+  display: inline-block; padding: 6px 12px; font-size: 14px; color: var(--text); text-decoration: none;
+  background: #fff; border: 2px solid #111; box-shadow: 2px 2px 0 #111;
+}
+a.big { text-align: center; text-decoration: none; color: var(--text); }
+a.big.primary { color: #fff; }

@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" />
-  <link rel="stylesheet" href="style.css?v=202611100223" />
+  <link rel="stylesheet" href="style.css?v=202611100349" />
 </head>
 <body>
   <div id="map"></div>
@@ -47,6 +47,24 @@
 
       <button id="btnCustomDone" class="big primary">이 캐릭터로 시작하기</button>
       <button id="btnCustomCancel" class="big hidden">취소</button>
+    </div>
+  </div>
+
+  <!-- ===== 안전신문고 민원 넣기 ===== -->
+  <div id="complaint" class="overlay hidden">
+    <div class="card complaint-card">
+      <h2>📢 안전신문고 민원 넣기</h2>
+      <p class="hint">아래 문안을 복사해서 안전신문고 신고 내용에 붙여넣으세요. 필요하면 고쳐도 돼요.</p>
+      <textarea id="complaintText" rows="9"></textarea>
+      <div id="complaintPhotoRow" class="complaint-photo hidden">
+        <img id="complaintPhoto" alt="첨부할 사진" />
+        <div>
+          <a id="btnSavePhoto" class="small-btn" download="walkmap-민원사진.jpg">📷 사진 저장하기</a>
+          <p class="hint">안전신문고에서는 사진을 직접 첨부해야 해요. 먼저 저장해 두세요.</p>
+        </div>
+      </div>
+      <a id="btnGoSafety" class="big primary" target="_blank" rel="noopener">📋 복사하고 안전신문고로 이동</a>
+      <button id="btnComplaintClose" class="big">닫기</button>
     </div>
   </div>
 
@@ -117,6 +135,7 @@
       <button class="rate good" data-rating="good">😊 편해요</button>
       <button class="rate bad" data-rating="bad">😣 불편해요</button>
     </div>
+    <button id="btnComplaint" class="complaint-btn hidden">📢 이 내용으로 민원 넣기</button>
 
     <textarea id="comment" maxlength="200" rows="2"
       placeholder="코멘트를 남겨주세요 (예: 보도블럭이 깨져 있어요, 그늘이 많아요)"></textarea>
@@ -143,6 +162,6 @@
   <div id="toast" class="toast"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script type="module" src="app.js?v=202611100223"></script>
+  <script type="module" src="app.js?v=202611100349"></script>
 </body>
 </html>

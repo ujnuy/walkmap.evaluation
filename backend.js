@@ -12,7 +12,7 @@
 //   getPhoto(id)                  → dataURL | null
 //   listMyReviews(uid)            → 내가 쓴 글 (최신순)
 //   loadProfile(uid) / saveProfile(uid, data)
-import { FIREBASE_CONFIG } from "./config.js?v=202611100223";
+import { FIREBASE_CONFIG } from "./config.js?v=202611100349";
 
 export async function createBackend() {
   if (FIREBASE_CONFIG) {

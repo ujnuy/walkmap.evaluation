@@ -1,6 +1,6 @@
-import { TRAIL_COLOR, MAX_ACCURACY_M, MIN_STEP_M, POOR_ACCURACY_M } from "./config.js?v=202611100223";
-import { createBackend } from "./backend.js?v=202611100223";
-import { walkerHtml, previewSvg, HAIRS, SKINS, OUTFITS, normalizeCharacter } from "./sprite.js?v=202611100223";
+import { TRAIL_COLOR, MAX_ACCURACY_M, MIN_STEP_M, POOR_ACCURACY_M } from "./config.js?v=202611100349";
+import { createBackend } from "./backend.js?v=202611100349";
+import { walkerHtml, previewSvg, HAIRS, SKINS, OUTFITS, normalizeCharacter } from "./sprite.js?v=202611100349";
 
 const $ = (id) => document.getElementById(id);
 const DEMO = new URLSearchParams(location.search).has("demo");
@@ -22,6 +22,8 @@ const state = {
   rating: null,
   photo: null,           // 압축된 dataURL
   gpsRoad: "",           // 내 위치(GPS)의 길 이름
+  gpsPlace: null,        // { road, area, dong, houseNumber } (민원 문안용 주소)
+  freePlace: null,
   free: false,           // 자유모드: 지도를 움직여 원하는 길을 평가
   freeTarget: null,      // 자유모드에서 십자 표시가 가리키는 위치
   freeRoad: "",
@@ -325,20 +327,31 @@ function unflatten(flat) {
 // Nominatim 이용 정책: 초당 1회 이하 → 모든 요청을 1.1초 간격으로 줄 세움
 let nominatimQueue = Promise.resolve();
 let lastNominatimAt = 0;
-function fetchRoadName(pos) {
+function fetchPlace(pos) {
   const job = nominatimQueue.then(async () => {
     const wait = lastNominatimAt + 1100 - Date.now();
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     lastNominatimAt = Date.now();
     const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=17&accept-language=ko&lat=${pos.lat}&lon=${pos.lng}`;
-    const data = await (await fetch(url)).json();
-    const a = data.address || {};
-    return a.road || a.pedestrian || a.footway || a.path || a.neighbourhood || data.name || "이름 없는 길";
+    return parsePlace(await (await fetch(url)).json());
   });
   nominatimQueue = job.catch(() => {});
   return job;
 }
 
+// Nominatim 결과 → { road: 길 이름, area: "시 구 동", dong, houseNumber }
+function parsePlace(data) {
+  const a = data.address || {};
+  const road = a.road || a.pedestrian || a.footway || a.path || a.neighbourhood || data.name || "이름 없는 길";
+  const city = a.province || a.city || a.state || "";
+  const gu = a.borough || a.city_district || a.county || (a.city && a.city !== city ? a.city : "") || "";
+  const dong = a.quarter || a.suburb || a.neighbourhood || a.village || a.town || "";
+  const area = [];
+  for (const p of [city, gu, dong]) if (p && !area.includes(p)) area.push(p);
+  return { road, area: area.join(" "), dong: dong !== road ? dong : "", houseNumber: a.house_number || "" };
+}
+
+const activePlace = () => (state.free ? state.freePlace : state.gpsPlace);
 const activeRoad = () => (state.free ? state.freeRoad : state.gpsRoad);
 const targetPos = () => (state.free ? state.freeTarget : state.current);
 
@@ -355,7 +368,8 @@ async function maybeUpdateRoad(pos) {
   if (!far || now - lastRoadQuery.at < 5000) return; // 이용 정책: 과도한 요청 금지
   lastRoadQuery = { at: now, pos };
   try {
-    state.gpsRoad = await fetchRoadName(pos);
+    state.gpsPlace = await fetchPlace(pos);
+    state.gpsRoad = state.gpsPlace.road;
   } catch {
     state.gpsRoad = state.gpsRoad || "알 수 없는 길";
   }
@@ -420,10 +434,12 @@ function updateFreeTarget() {
   freeTimer = setTimeout(async () => {
     const seq = ++freeSeq;
     const pos = state.freeTarget;
-    let road;
-    try { road = await fetchRoadName(pos); } catch { road = "알 수 없는 길"; }
+    let place;
+    try { place = await fetchPlace(pos); } catch { place = { road: "알 수 없는 길", area: "", dong: "", houseNumber: "" }; }
+    const road = place.road;
     if (seq !== freeSeq || !state.free) return; // 그 사이 또 움직였으면 버림
     state.freeRoad = road;
+    state.freePlace = place;
     state.freeLoading = false;
     showRoad();
   }, 700);
@@ -479,6 +495,8 @@ function clearPhoto() {
 }
 
 function updateSubmit() {
+  // "불편해요"를 골랐을 때만 민원 버튼 표시
+  $("btnComplaint").classList.toggle("hidden", state.rating !== "bad");
   const hasContent = state.rating || $("comment").value.trim() || state.photo;
   const notReady = state.free ? !state.freeTarget || state.freeLoading : !state.current;
   $("btnSubmit").disabled = notReady || !hasContent;
@@ -519,6 +537,90 @@ $("btnSubmit").addEventListener("click", async () => {
   $("btnSubmit").textContent = "남기기";
   updateSubmit();
 });
+
+// ===================== 안전신문고 민원 넣기 =====================
+// "불편해요" → 위치·코멘트·사진으로 신고 문안을 만들어 복사하고 안전신문고로 이동.
+// (안전신문고는 외부에서 내용을 자동으로 채울 수 없어서, 복사 → 붙여넣기 방식)
+const SAFETY_REPORT_URL = "https://www.safetyreport.go.kr/";
+
+$("btnComplaint").addEventListener("click", () => {
+  if (!targetPos()) return toast("아직 위치를 찾지 못했어요.");
+  $("complaintText").value = buildComplaintText();
+  const hasPhoto = !!state.photo;
+  $("complaintPhotoRow").classList.toggle("hidden", !hasPhoto);
+  if (hasPhoto) {
+    $("complaintPhoto").src = state.photo;
+    $("btnSavePhoto").href = state.photo;
+  }
+  $("complaint").classList.remove("hidden");
+});
+$("btnComplaintClose").addEventListener("click", () => $("complaint").classList.add("hidden"));
+
+// 링크(새 탭으로 안전신문고 열기)를 누르는 순간 복사 → 팝업 차단 없이 이동
+$("btnGoSafety").href = SAFETY_REPORT_URL;
+$("btnGoSafety").addEventListener("click", () => {
+  const ta = $("complaintText");
+  let ok = false;
+  try { ta.select(); ok = document.execCommand("copy"); } catch {}
+  navigator.clipboard?.writeText(ta.value).catch(() => {});
+  ta.setSelectionRange(0, 0);
+  toast(ok || navigator.clipboard ? "📋 복사했어요! 안전신문고 신고 내용에 붙여넣으세요." : "복사가 안 됐어요. 문안을 길게 눌러 직접 복사해 주세요.");
+});
+
+function buildComplaintText() {
+  const pos = targetPos();
+  const place = activePlace() || {};
+  const roadRaw = activeRoad();
+  const road = roadRaw && !/알 수 없는|이름 없는/.test(roadRaw) ? roadRaw : "";
+  const spot = [place.dong, road].filter(Boolean).join(" ") || "해당 위치";
+  const address = [place.area, road, place.houseNumber].filter(Boolean).join(" ");
+
+  let comment = politeEnding($("comment").value.trim().replace(/\s+/g, " "));
+  if (comment && !/[.!?。]$/.test(comment)) comment += ".";
+  const summary = comment
+    ? `${spot} 앞 ${comment} 보행에 불편이 있어 현장 확인 및 조치를 요청드립니다.`
+    : `${spot} 앞 보행로가 걷기에 불편합니다. 현장 확인 및 조치를 요청드립니다.`;
+
+  const lat = pos.lat.toFixed(6), lng = pos.lng.toFixed(6);
+  return [
+    summary,
+    "",
+    `■ 위치: ${address || "(주소를 직접 입력해 주세요)"}`,
+    `■ 좌표: ${lat}, ${lng}`,
+    `■ 지도: https://map.kakao.com/link/map/신고위치,${lat},${lng}`,
+    state.photo ? "■ 사진: 현장 사진 첨부" : null,
+  ].filter((l) => l !== null).join("\n");
+}
+
+// 구어체 끝맺음을 민원용 존댓말로 (문장마다)
+// 예: "깨져 있어요" → "깨져 있습니다", "힘들어요" → "힘듭니다", "미끄러워요" → "미끄럽습니다"
+function politeEnding(text) {
+  return text.replace(/([가-힣]+)요(?=[.!?]|\s*$)/g, (m, word) => politeWord(word) ?? m);
+}
+
+function politeWord(w) {
+  // 고정 표현
+  for (const [a, b] of [["해", "합니다"], ["돼", "됩니다"], ["이에", "입니다"], ["예", "입니다"]]) {
+    if (w.endsWith(a)) return w.slice(0, -a.length) + b;
+  }
+  const HANGUL = 0xac00;
+  const jong = (ch) => (ch.charCodeAt(0) - HANGUL) % 28;           // 받침 번호 (0 = 없음, 8 = ㄹ, 17 = ㅂ)
+  const withJong = (ch, j) => String.fromCharCode(ch.charCodeAt(0) - jong(ch) + j);
+  // ㅂ 불규칙: 어려워 → 어렵, 미끄러워 → 미끄럽
+  if (w.length >= 2 && w.endsWith("워")) {
+    const stem = w.slice(0, -1);
+    return stem.slice(0, -1) + withJong(stem.slice(-1), 17) + "습니다";
+  }
+  // 받침 있는 말 + 아/어: 좁아 → 좁습니다, 있어 → 있습니다, 힘들어 → 힘듭니다(ㄹ 탈락)
+  if (w.length >= 2 && /[아어]$/.test(w)) {
+    const stem = w.slice(0, -1);
+    const last = stem.slice(-1);
+    const j = jong(last);
+    if (j === 8) return stem.slice(0, -1) + withJong(last, 17) + "니다";
+    if (j > 0) return stem + "습니다";
+  }
+  return null; // 모르는 형태는 그대로 둠
+}
 
 // 사진 압축: 긴 변 800px, JPEG. 600KB 넘으면 화질을 낮춤.
 async function compressImage(file, maxSide = 800) {
