@@ -507,6 +507,7 @@ $("btnSubmit").addEventListener("click", async () => {
       renderReviews();
     }
     toast(state.rating === "bad" ? "불편 신고 고마워요!" : "남겼어요!");
+    refreshMyList();
     state.rating = null;
     $("comment").value = "";
     $("charCount").textContent = "0/200";
@@ -551,11 +552,13 @@ function isMine(r) {
   return state.user ? r.authorId === state.user.uid : state.guestMine.has(r.id);
 }
 
+const markersById = new Map();
 function renderReviews() {
   reviewLayer.clearLayers();
+  markersById.clear();
   for (const r of state.reviews) {
     const color = r.rating === "good" ? "#16a34a" : r.rating === "bad" ? "#dc2626" : "#6b7280";
-    L.circleMarker([r.lat, r.lng], {
+    const marker = L.circleMarker([r.lat, r.lng], {
       radius: isMine(r) ? 9 : 7,
       color: isMine(r) ? "#f97316" : "#111",
       weight: isMine(r) ? 3 : 2,
@@ -565,6 +568,7 @@ function renderReviews() {
       .bindPopup(() => reviewHtml(r))
       .on("popupopen", (e) => hydratePhotos(e.popup.getElement()))
       .addTo(reviewLayer);
+    markersById.set(r.id, marker);
   }
   renderRoadInfo();
 }
@@ -615,11 +619,70 @@ function hydratePhotos(root) {
   });
 }
 
+// ===================== 내가 평가한 코멘트 (오른쪽 📝 버튼) =====================
+// 로그인 사용자: 계정(authorId)으로 모아서 보여줌 → 어느 기기에서든 확인 가능
+// 게스트: 작성자 정보를 저장하지 않으므로 목록에 모이지 않음 (지도에는 그대로 남음)
+$("btnMyList").addEventListener("click", () => {
+  $("menu").classList.add("hidden");
+  $("myList").classList.remove("hidden");
+  refreshMyList();
+});
+$("btnMyListClose").addEventListener("click", () => $("myList").classList.add("hidden"));
+
+async function refreshMyList() {
+  if ($("myList").classList.contains("hidden")) return;
+  const body = $("myListBody");
+  if (!state.user) {
+    $("myCount").textContent = "";
+    body.innerHTML = `<div class="empty">
+      <p>👤 게스트로 남긴 평가는 이 목록에 저장되지 않아요.</p>
+      <p class="muted">게스트 평가도 지도에는 그대로 남아 다른 사람들이 볼 수 있어요.</p>
+      <p class="muted">로그인하면 내가 남긴 평가를 여기서 모아 보고, 다른 기기에서도 확인·삭제할 수 있어요.</p>
+      ${backend.canLogin ? `<button id="btnGoLogin" class="big primary">🔐 로그인하러 가기</button>` : ""}
+    </div>`;
+    $("btnGoLogin")?.addEventListener("click", () => {
+      if (!confirm("처음 화면으로 돌아가요. 게스트로 걸은 경로 기록은 사라져요. 계속할까요?")) return;
+      sessionStorage.removeItem(GUEST_TRAIL_KEY);
+      sessionStorage.removeItem(GUEST_MINE_KEY);
+      location.reload();
+    });
+    return;
+  }
+  body.innerHTML = `<p class="muted pad">불러오는 중…</p>`;
+  let list;
+  try {
+    list = await backend.listMyReviews(state.user.uid);
+  } catch (e) {
+    body.innerHTML = `<p class="muted pad">불러오지 못했어요: ${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  $("myCount").textContent = `(${list.length})`;
+  body.innerHTML = list.length
+    ? `<ul class="my-items">${list.map((r) => `<li>${reviewHtml(r)}
+        <button class="goto" data-goto="${escapeHtml(r.id)}" data-lat="${Number(r.lat)}" data-lng="${Number(r.lng)}">🗺️ 지도에서 보기</button></li>`).join("")}</ul>`
+    : `<div class="empty"><p>아직 남긴 평가가 없어요.</p><p class="muted">길을 걸으며 편해요/불편해요를 남겨 보세요!</p></div>`;
+  hydratePhotos(body);
+}
+
+// 목록에서 "지도에서 보기" → 그 위치로 이동하고 팝업 열기
+$("myListBody").addEventListener("click", (e) => {
+  const btn = e.target.closest(".goto");
+  if (!btn) return;
+  const ll = L.latLng(Number(btn.dataset.lat), Number(btn.dataset.lng));
+  if (!Number.isFinite(ll.lat) || !Number.isFinite(ll.lng)) return;
+  if (window.innerWidth < 700) $("myList").classList.add("hidden"); // 휴대폰에선 지도가 보이게 닫음
+  state.follow = false;
+  $("btnFollow").classList.remove("active");
+  map.setView(ll, 18);
+  const marker = markersById.get(btn.dataset.goto);
+  if (marker) setTimeout(() => marker.openPopup(), 300);
+});
+
 // 내 글 삭제 (로그인 사용자만)
 document.addEventListener("click", async (e) => {
   const id = e.target.closest?.("[data-del]")?.dataset.del;
   if (!id || !confirm("이 글을 삭제할까요?")) return;
-  try { await backend.deleteReview(id); map.closePopup(); toast("삭제했어요."); }
+  try { await backend.deleteReview(id); map.closePopup(); toast("삭제했어요."); refreshMyList(); }
   catch (err) { toast("삭제 실패: " + err.message); }
 });
 

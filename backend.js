@@ -10,6 +10,7 @@
 //   addReview(review, photo?)     → id   (photo = "data:image/jpeg;base64,..." 문자열)
 //   deleteReview(id)
 //   getPhoto(id)                  → dataURL | null
+//   listMyReviews(uid)            → 내가 쓴 글 (최신순)
 //   loadProfile(uid) / saveProfile(uid, data)
 import { FIREBASE_CONFIG } from "./config.js";
 
@@ -52,6 +53,9 @@ function localBackend() {
       emit();
     },
     async getPhoto(id) { return read(P_KEY, {})[id] || null; },
+    async listMyReviews(uid) {
+      return read(R_KEY, []).filter((r) => r.authorId === uid).sort((a, b) => b.createdAt - a.createdAt);
+    },
     async loadProfile() { return null; },
     async saveProfile() {},
   };
@@ -107,6 +111,12 @@ async function firebaseBackend(config) {
     async deleteReview(id) {
       await fs.deleteDoc(fs.doc(db, "photos", id)).catch(() => {});
       await fs.deleteDoc(fs.doc(db, "reviews", id));
+    },
+    async listMyReviews(uid) {
+      // where 하나만 쓰면 추가 색인 없이 동작 → 정렬은 받아와서 함
+      const q = fs.query(reviewsCol, fs.where("authorId", "==", uid), fs.limit(500));
+      const snap = await fs.getDocs(q);
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => b.createdAt - a.createdAt);
     },
     async getPhoto(id) {
       const snap = await fs.getDoc(fs.doc(db, "photos", id));

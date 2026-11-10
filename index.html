@@ -50,6 +50,15 @@
     </div>
   </div>
 
+  <!-- ===== 내가 평가한 코멘트 ===== -->
+  <aside id="myList" class="drawer hidden" aria-label="내가 평가한 코멘트">
+    <div class="drawer-head">
+      <strong>📝 내가 평가한 코멘트 <span id="myCount"></span></strong>
+      <button id="btnMyListClose" title="닫기">✕</button>
+    </div>
+    <div id="myListBody" class="drawer-body"></div>
+  </aside>
+
   <!-- ===== 메뉴 ===== -->
   <div id="menu" class="overlay hidden">
     <div class="card">
@@ -87,6 +96,7 @@
   <!-- 지도 위 버튼 -->
   <div class="fab-group">
     <button id="btnMenu" class="fab" title="메뉴">☰</button>
+    <button id="btnMyList" class="fab" title="내가 평가한 코멘트 보기">📝</button>
     <button id="btnFollow" class="fab active" title="내 위치 따라가기">◎</button>
     <button id="btnClear" class="fab" title="지나온 길 지우기">⌫</button>
   </div>
