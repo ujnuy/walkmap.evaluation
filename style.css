@@ -170,9 +170,7 @@ textarea:focus { border-color: var(--accent); }
   animation: blink 1.2s steps(2) infinite;
 }
 .locating.hidden { display: none; }
-.locating button { display: none; margin: 10px auto 0; font-family: var(--font); padding: 6px 14px; border: 2px solid #111; background: var(--accent); color: #fff; cursor: pointer; }
 .locating.error { animation: none; color: var(--bad); }
-.locating.error button { display: block; }
 @keyframes blink { 50% { opacity: .6; } }
 
 /* ===== 캐릭터 꾸미기 ===== */
@@ -300,3 +298,24 @@ body.free-mode .road .label { color: var(--accent); }
 }
 a.big { text-align: center; text-decoration: none; color: var(--text); }
 a.big.primary { color: #fff; }
+
+/* ===== 위치 오류 안내 / 인앱 브라우저 ===== */
+.locating-hint { display: none; margin: 8px 0 0; font-size: 13px; line-height: 1.5; color: var(--text); }
+.locating.error .locating-hint:not(:empty) { display: block; }
+.locating-actions { display: none; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 12px; }
+.locating.error .locating-actions { display: flex; }
+.locating.error { width: min(340px, calc(100% - 32px)); }
+.locating .locating-actions button {
+  display: block; margin: 0; font-family: var(--font); font-size: 14px; padding: 8px 12px;
+  border: 2px solid #111; background: #fff; color: var(--text); cursor: pointer;
+}
+.locating .locating-actions #btnRetryLocate { background: var(--accent); color: #fff; }
+.locating .locating-actions button.hidden { display: none; }
+.inapp-note {
+  margin-top: 10px; padding: 10px; text-align: left; font-size: 13px; line-height: 1.5;
+  background: #fef3c7; color: #78350f; border: 2px solid #111;
+}
+.inapp-note.hidden { display: none; }
+.inapp-note p { margin: 0 0 6px; }
+.small-btn.hidden { display: none; }
+button.small-btn { font-family: var(--font); cursor: pointer; }

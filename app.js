@@ -1,6 +1,6 @@
-import { TRAIL_COLOR, MAX_ACCURACY_M, MIN_STEP_M, POOR_ACCURACY_M } from "./config.js?v=202611100349";
-import { createBackend } from "./backend.js?v=202611100349";
-import { walkerHtml, previewSvg, HAIRS, SKINS, OUTFITS, normalizeCharacter } from "./sprite.js?v=202611100349";
+import { TRAIL_COLOR, MAX_ACCURACY_M, MIN_STEP_M, POOR_ACCURACY_M } from "./config.js?v=202611100553";
+import { createBackend } from "./backend.js?v=202611100553";
+import { walkerHtml, previewSvg, HAIRS, SKINS, OUTFITS, normalizeCharacter } from "./sprite.js?v=202611100553";
 
 const $ = (id) => document.getElementById(id);
 const DEMO = new URLSearchParams(location.search).has("demo");
@@ -237,14 +237,80 @@ setInterval(() => {
 
 function onGeoError(err) {
   const msg = {
-    1: "위치 권한이 거부되었어요. 브라우저 설정에서 허용해 주세요.",
+    1: "위치 권한이 꺼져 있어요.",
     2: "위치를 찾을 수 없어요.",
-    3: "위치 요청 시간이 초과됐어요.",
-  }[err.code] || err.message;
+    3: "위치를 찾는 데 시간이 너무 걸려요.",
+  }[err.code] || "위치를 가져오지 못했어요.";
+  let hint;
+  if (IN_APP) {
+    hint = `${IN_APP.name} 안에서 열면 위치 기능이 막히는 경우가 많아요. ${openExternalGuide()}`;
+  } else if (err.code === 1) {
+    hint = "주소창 옆 🔒(또는 ⓘ)를 눌러 위치를 '허용'으로 바꾸고, 휴대폰 설정에서 이 브라우저의 위치 권한도 켜 주세요.";
+  } else if (err.code === 2) {
+    hint = "휴대폰 설정에서 위치(GPS)가 켜져 있는지 확인해 주세요.";
+  } else {
+    hint = "실내라면 창가나 밖에서 다시 시도해 주세요.";
+  }
   $("status").textContent = "위치 없음";
-  if (!walker) showLocating(`⚠️ ${msg}`, true);
+  if (!walker && !state.free) showLocating(`⚠️ ${msg}`, true, hint);
+  else if (!walker) { /* 자유모드 사용 중이면 조용히 */ }
   else toast(msg);
 }
+
+// ----- 인앱 브라우저(인스타그램·카카오톡 등) 감지 -----
+// 앱 안의 브라우저는 위치 권한을 막거나 지원하지 않는 경우가 많음 → 외부 브라우저로 안내
+function detectInApp() {
+  const ua = navigator.userAgent || "";
+  const apps = [
+    [/Instagram/i, "인스타그램"],
+    [/FBAN|FBAV|FB_IAB|FBIOS/i, "페이스북"],
+    [/KAKAOTALK/i, "카카오톡"],
+    [/NAVER\(inapp|NAVER\/\d/i, "네이버 앱"],
+    [/DaumApps/i, "다음 앱"],
+    [/\bLine\//i, "라인"],
+    [/everytimeApp/i, "에브리타임"],
+    [/BAND\//i, "밴드"],
+    [/Twitter|TwitterAndroid/i, "X(트위터)"],
+    [/ThreadsApp|Barcelona/i, "스레드"],
+  ];
+  for (const [re, name] of apps) if (re.test(ua)) return { name };
+  return null;
+}
+const IN_APP = detectInApp();
+const IS_ANDROID = /Android/i.test(navigator.userAgent);
+const IS_KAKAO = /KAKAOTALK/i.test(navigator.userAgent);
+
+function canOpenExternal() { return IN_APP && (IS_ANDROID || IS_KAKAO); }
+
+function openExternalGuide() {
+  if (canOpenExternal()) return "'브라우저로 열기'를 눌러 주세요.";
+  return "오른쪽 위(또는 아래) ⋯ 메뉴에서 '외부 브라우저로 열기' 또는 'Safari로 열기'를 눌러 주세요.";
+}
+
+function openExternal() {
+  const url = location.origin + location.pathname + location.search; // #뒤는 빼야 intent 주소가 안 깨짐
+  if (IS_KAKAO) {
+    location.href = "kakaotalk://web/openExternal?url=" + encodeURIComponent(url);
+  } else if (IS_ANDROID) {
+    // 안드로이드: 크롬(없으면 기본 브라우저)으로 열기
+    const noScheme = url.replace(/^https?:\/\//, "");
+    location.href = `intent://${noScheme}#Intent;scheme=https;action=android.intent.action.VIEW;end`;
+  }
+}
+
+if (IN_APP) {
+  $("inAppText").textContent = `📱 지금 ${IN_APP.name} 안에서 열려 있어요. 위치가 안 잡히면 크롬·사파리 같은 브라우저로 열어 주세요. ${openExternalGuide()}`;
+  $("inAppNote").classList.remove("hidden");
+  $("btnOpenExternalStart").classList.toggle("hidden", !canOpenExternal());
+  $("btnOpenExternal").classList.toggle("hidden", !canOpenExternal());
+}
+$("btnOpenExternalStart").addEventListener("click", openExternal);
+$("btnOpenExternal").addEventListener("click", openExternal);
+$("btnLocateFree").addEventListener("click", () => {
+  hideLocating();
+  enterFreeMode();
+  toast("지도를 확대·이동해서 평가할 길을 십자 표시에 맞춰 주세요.");
+});
 
 // ----- 위치 부정확 경고 (GPS 없는 노트북·PC는 와이파이/IP로 추측해서 수백 m~수 km 틀림) -----
 let accWarnDismissed = false;
@@ -268,8 +334,9 @@ function formatDistance(m) {
   return m >= 1000 ? `${(m / 1000).toFixed(1)}km` : `${Math.round(m)}m`;
 }
 
-function showLocating(text, isError = false) {
+function showLocating(text, isError = false, hint = "") {
   $("locatingText").textContent = text;
+  $("locatingHint").textContent = hint;
   $("locating").classList.toggle("error", isError);
   $("locating").classList.remove("hidden");
 }
