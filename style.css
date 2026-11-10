@@ -319,3 +319,9 @@ a.big.primary { color: #fff; }
 .inapp-note p { margin: 0 0 6px; }
 .small-btn.hidden { display: none; }
 button.small-btn { font-family: var(--font); cursor: pointer; }
+
+/* 오류 창 버튼: 메시지 밑에 다시 시도 / 자유모드로 들어가기 (세로로, 같은 너비) */
+.locating .locating-actions { display: none; }
+.locating.error .locating-actions { display: grid; grid-template-columns: 1fr; }
+.locating .locating-actions button { width: 100%; padding: 10px 6px; }
+.locating .locating-actions #btnOpenExternal { grid-column: 1 / -1; }

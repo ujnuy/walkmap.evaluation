@@ -1,6 +1,6 @@
-import { TRAIL_COLOR, MAX_ACCURACY_M, MIN_STEP_M, POOR_ACCURACY_M } from "./config.js?v=202611100553";
-import { createBackend } from "./backend.js?v=202611100553";
-import { walkerHtml, previewSvg, HAIRS, SKINS, OUTFITS, normalizeCharacter } from "./sprite.js?v=202611100553";
+import { TRAIL_COLOR, MAX_ACCURACY_M, MIN_STEP_M, POOR_ACCURACY_M } from "./config.js?v=202611100554";
+import { createBackend } from "./backend.js?v=202611100554";
+import { walkerHtml, previewSvg, HAIRS, SKINS, OUTFITS, normalizeCharacter } from "./sprite.js?v=202611100554";
 
 const $ = (id) => document.getElementById(id);
 const DEMO = new URLSearchParams(location.search).has("demo");
