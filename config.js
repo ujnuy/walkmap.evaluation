@@ -24,3 +24,7 @@ export const MIN_STEP_M = 3;
 
 // 정확도가 이 값(m)보다 나쁘면 "위치가 부정확해요" 경고를 띄움 (노트북 등 GPS 없는 기기)
 export const POOR_ACCURACY_M = 200;
+
+// 카카오 로드뷰 (앱 안에서 보기). developers.kakao.com → 내 애플리케이션 → 앱 키 → "JavaScript 키"
+// 비워두면(null) 로드뷰 버튼이 카카오맵 로드뷰를 새 탭으로 열어요.
+export const KAKAO_JS_KEY = null;

@@ -1,7 +1,8 @@
-import { TRAIL_COLOR, MAX_ACCURACY_M, MIN_STEP_M, POOR_ACCURACY_M } from "./config.js?v=202611102349";
-import * as T from "./trail.js?v=202611102349";
-import { createBackend } from "./backend.js?v=202611102349";
-import { walkerHtml, previewSvg, HAIRS, SKINS, OUTFITS, normalizeCharacter } from "./sprite.js?v=202611102349";
+import { TRAIL_COLOR, MAX_ACCURACY_M, MIN_STEP_M, POOR_ACCURACY_M, KAKAO_JS_KEY } from "./config.js?v=202611120733";
+import { roadviewLink, loadKakaoSdk, createRoadview } from "./roadview.js?v=202611120733";
+import * as T from "./trail.js?v=202611120733";
+import { createBackend } from "./backend.js?v=202611120733";
+import { walkerHtml, previewSvg, HAIRS, SKINS, OUTFITS, normalizeCharacter } from "./sprite.js?v=202611120733";
 
 const $ = (id) => document.getElementById(id);
 const DEMO = new URLSearchParams(location.search).has("demo");
@@ -587,7 +588,7 @@ async function maybeUpdateRoad(pos) {
 // (GPS가 없거나 부정확한 기기에서도 사용 가능)
 $("btnFreeMode").addEventListener("click", () => (state.free ? exitFreeMode() : enterFreeMode()));
 
-function enterFreeMode() {
+function enterFreeMode({ quiet = false } = {}) {
   state.free = true;
   state.follow = false;
   $("btnFollow").classList.remove("active");
@@ -598,10 +599,11 @@ function enterFreeMode() {
   $("accWarn").classList.add("hidden");
   placeCrosshair();
   updateFreeTarget();
-  toast("지도를 움직여서 평가할 길을 십자 표시에 맞춰 주세요.");
+  if (!quiet) toast("지도를 움직여서 평가할 길을 십자 표시에 맞춰 주세요.");
 }
 
 function exitFreeMode() {
+  closeRoadview();
   state.free = false;
   document.body.classList.remove("free-mode");
   $("btnFreeMode").textContent = "🗺️ 자유모드로 전환하기";
@@ -901,7 +903,101 @@ function reviewHtml(r) {
     ? `<button class="del" data-del="${escapeHtml(r.id)}">삭제</button>` : "";
   const photo = r.hasPhoto ? `<div class="photo-slot" data-id="${escapeHtml(r.id)}"><span class="muted">📷 사진 불러오는 중…</span></div>` : "";
   return `${label}${mine} ${escapeHtml(r.comment || "")}${photo}
-    <div class="meta">${escapeHtml(r.road || "")} · ${new Date(r.createdAt).toLocaleString("ko-KR")}${del}</div>`;
+    <div class="meta">${escapeHtml(r.road || "")} · ${new Date(r.createdAt).toLocaleString("ko-KR")}${del}
+      <button class="rv-link" data-rvlat="${Number(r.lat)}" data-rvlng="${Number(r.lng)}">🛣️ 로드뷰</button></div>`;
+}
+
+// ===================== 🛣️ 로드뷰 (카카오) =====================
+// 로드뷰를 열면 자유모드로 바뀌고, 로드뷰에서 이동한 위치 = 평가할 위치(십자 표시)가 돼요.
+let roadview = null;       // createRoadview 결과
+let roadviewOpen = false;
+
+$("btnRoadview").addEventListener("click", () => {
+  const p = targetPos() || map.getCenter();
+  openRoadview(p.lat, p.lng);
+});
+// 평가 팝업·목록의 "🛣️ 로드뷰" 버튼
+document.addEventListener("click", (e) => {
+  const b = e.target.closest?.(".rv-link");
+  if (!b) return;
+  const lat = Number(b.dataset.rvlat), lng = Number(b.dataset.rvlng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+  map.closePopup();
+  $("myList").classList.add("hidden");
+  openRoadview(lat, lng);
+});
+$("btnRvClose").addEventListener("click", () => {
+  closeRoadview();
+  if (state.free) toast("로드뷰에서 보던 곳이 십자 표시에 있어요. 바로 평가할 수 있어요.");
+});
+
+async function openRoadview(lat, lng) {
+  // 키가 없으면 카카오맵 로드뷰로 연결 (새 탭 / 카카오맵 앱)
+  if (!KAKAO_JS_KEY) {
+    window.open(roadviewLink(lat, lng), "_blank", "noopener");
+    return;
+  }
+  roadviewOpen = true;
+  layoutRoadview();
+  $("roadview").classList.remove("hidden");
+  rvMessage("🛣️ 로드뷰를 불러오는 중…");
+  let kakao;
+  try {
+    kakao = await loadKakaoSdk(KAKAO_JS_KEY);
+  } catch (err) {
+    closeRoadview();
+    if (confirm(`앱 안에서 로드뷰를 열지 못했어요.\n(${err.message})\n카카오맵에서 로드뷰를 열까요?`)) {
+      window.open(roadviewLink(lat, lng), "_blank", "noopener");
+    }
+    return;
+  }
+  if (!roadviewOpen) return; // 불러오는 사이에 닫음
+  if (!roadview) roadview = createRoadview(kakao, $("rvBox"), (la, ln) => moveFreeTargetTo(la, ln));
+  layoutRoadview();
+  roadview.relayout();
+  const found = await roadview.show(lat, lng);
+  if (!found) {
+    rvMessage("이 근처(200m)에는 로드뷰 사진이 없어요. 지도를 옮겨서 다시 눌러 보세요. (카카오 로드뷰는 한국만 지원)");
+    return;
+  }
+  rvMessage("");
+  // 평가 위치를 로드뷰 위치로
+  if (!state.free) enterFreeMode({ quiet: true });
+  $("roadLabel").textContent = "🛣️ 로드뷰 위치의 길";
+  if (map.getZoom() < 17) map.setZoom(18, { animate: false });
+  moveFreeTargetTo(lat, lng);
+}
+
+function closeRoadview() {
+  if (!roadviewOpen) return;
+  roadviewOpen = false;
+  $("roadview").classList.add("hidden");
+  if (state.free) $("roadLabel").textContent = "📌 선택한 길";
+}
+
+function rvMessage(text) {
+  $("rvMsg").textContent = text;
+  $("rvMsg").classList.toggle("hidden", !text);
+}
+
+// 로드뷰 창은 상단바와 평가 패널 사이를 채움 (평가 패널은 그대로 쓸 수 있게)
+function layoutRoadview() {
+  const top = document.querySelector(".topbar").getBoundingClientRect().bottom;
+  const bottom = Math.min($("panel").getBoundingClientRect().top, window.innerHeight);
+  $("roadview").style.top = `${top}px`;
+  $("roadview").style.height = `${Math.max(180, bottom - top)}px`;
+  roadview?.relayout();
+}
+window.addEventListener("resize", () => { if (roadviewOpen) layoutRoadview(); });
+$("panel").addEventListener("transitionend", () => { if (roadviewOpen) layoutRoadview(); });
+
+// 지도를 움직여서 lat,lng 가 십자 표시 위치에 오게 함 → moveend 에서 길 이름 조회
+function moveFreeTargetTo(lat, lng) {
+  if (!state.free) return;
+  const pt = map.latLngToContainerPoint([lat, lng]);
+  const offset = pt.subtract(crosshairPoint());
+  if (Math.abs(offset.x) < 1 && Math.abs(offset.y) < 1) return updateFreeTarget();
+  map.panBy(offset, { animate: false });
 }
 
 // 사진은 필요할 때만 불러옴 (팝업 열기 / 목록 펼치기)

@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" />
-  <link rel="stylesheet" href="style.css?v=202611102349" />
+  <link rel="stylesheet" href="style.css?v=202611120733" />
 </head>
 <body>
   <div id="map"></div>
@@ -121,6 +121,16 @@
     <div id="status" class="status"></div>
   </header>
 
+  <!-- 로드뷰 (카카오) -->
+  <section id="roadview" class="roadview hidden" aria-label="로드뷰">
+    <div class="rv-head">
+      <span>🛣️ 로드뷰 <span class="muted">끌어서 둘러보고 길 위 화살표로 이동</span></span>
+      <button id="btnRvClose">✕ 닫기</button>
+    </div>
+    <div id="rvBox" class="rv-box"></div>
+    <div id="rvMsg" class="rv-msg hidden"></div>
+  </section>
+
   <!-- 자유모드: 평가할 위치 표시 -->
   <div id="crosshair" class="crosshair hidden" aria-hidden="true">
     <div class="crosshair-tag">여기를 평가</div>
@@ -138,6 +148,7 @@
     <button id="btnMenu" class="fab" title="메뉴">☰</button>
     <button id="btnMyList" class="fab" title="내가 평가한 코멘트 보기">📝</button>
     <button id="btnTrails" class="fab" title="내가 지나온 길 보기">👣</button>
+    <button id="btnRoadview" class="fab" title="로드뷰로 보기">🛣️</button>
     <button id="btnFollow" class="fab active" title="내 위치 따라가기">◎</button>
     <button id="btnClear" class="fab" title="지나온 길 지우기">⌫</button>
   </div>
@@ -185,6 +196,6 @@
   <div id="toast" class="toast"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script type="module" src="app.js?v=202611102349"></script>
+  <script type="module" src="app.js?v=202611120733"></script>
 </body>
 </html>
