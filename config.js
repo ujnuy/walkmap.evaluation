@@ -27,4 +27,4 @@ export const POOR_ACCURACY_M = 200;
 
 // 카카오 로드뷰 (앱 안에서 보기). developers.kakao.com → 내 애플리케이션 → 앱 키 → "JavaScript 키"
 // 비워두면(null) 로드뷰 버튼이 카카오맵 로드뷰를 새 탭으로 열어요.
-export const KAKAO_JS_KEY = null;
+export const KAKAO_JS_KEY = "9e0ce27b596c51c1170bda2924627455";

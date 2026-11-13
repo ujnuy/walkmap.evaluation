@@ -14,7 +14,7 @@
 //   listTrailDays(uid)            → [{ date: "YYYY-MM-DD", pts: [lat,lng,t, …] }] (최근 날짜부터)
 //   saveTrailDay(uid, date, pts) / deleteTrailDay(uid, date)
 //   loadProfile(uid) / saveProfile(uid, data)
-import { FIREBASE_CONFIG } from "./config.js?v=202611120733";
+import { FIREBASE_CONFIG } from "./config.js?v=202611130224";
 
 export async function createBackend() {
   if (FIREBASE_CONFIG) {
